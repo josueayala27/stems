@@ -6,6 +6,7 @@ import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import AppSidebar from '~/shell/AppSidebar.vue'
 import AppToolbar from '~/shell/AppToolbar.vue'
+import TransportBar from '~/engine/TransportBar.vue'
 
 const route = useRoute()
 
@@ -79,6 +80,7 @@ const skip = css({
         <div :key="route.path" :class="page"><slot><NuxtPage /></slot></div>
       </main>
     </div>
+    <TransportBar />
   </div>
 </template>
 

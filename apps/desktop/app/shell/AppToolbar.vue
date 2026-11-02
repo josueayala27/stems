@@ -1,16 +1,24 @@
 <script setup lang="ts">
 import { css } from 'styled-system/css'
 import { NuxtLink } from '#components'
+import { computed } from 'vue'
 import { Badge, Divider, IconButton } from '~/ui'
+import { formatFrames } from '~/engine/engine'
+import { usePlayer } from '~/engine/player'
 
-// Readouts mirror the engine state. Until the engine lands they show the stopped, empty state.
-const readouts = [
-  { label: 'Setlist', value: 'None' },
-  { label: 'Song', value: 'None' },
-  { label: 'Position', value: '1.1', mono: true },
-  { label: 'BPM', value: '—', mono: true },
-  { label: 'Key', value: '—', mono: true },
-]
+// Readouts mirror the engine state; the engine is the clock.
+const player = usePlayer()
+const readouts = computed(() => {
+  const song = player.song.value
+  return [
+    { label: 'Setlist', value: 'None' },
+    { label: 'Song', value: song?.title ?? 'None' },
+    { label: 'Position', value: song ? formatFrames(player.position.value, player.sampleRate.value) : '—', mono: true },
+    { label: 'BPM', value: song ? String(song.bpm) : '—', mono: true },
+    { label: 'Key', value: song?.key || '—', mono: true },
+  ]
+})
+const device = computed(() => player.output.value)
 
 const root = css({
   display: 'flex',
@@ -66,7 +74,15 @@ const spacer = css({ flex: '1' })
     </dl>
     <span :class="spacer" />
     <Badge tone="neutral" icon="lucide:link" size="md" label="Link off" title="Ableton Link is not connected." />
-    <Badge tone="warning" dot size="md" label="No device" title="Choose an audio output in Settings." />
+    <Badge
+      v-if="device"
+      tone="success"
+      dot
+      size="md"
+      :label="device.name"
+      :title="`${device.name}: ${device.sampleRate} Hz, ${device.bufferSize} frames, ${device.channels} outputs`"
+    />
+    <Badge v-else tone="warning" dot size="md" label="No device" title="The default output opens when you play a song." />
     <NuxtLink to="/settings" aria-label="Settings"><IconButton icon="lucide:settings" label="Settings" variant="ghost" size="md" tabindex="-1" /></NuxtLink>
   </header>
 </template>

@@ -7,6 +7,7 @@ import type { Peaks } from '~/audio/peaks'
 import Waveform from '~/audio/Waveform.vue'
 import { library, pickPaths } from '~/data/library'
 import { saveSong } from '~/data/songs'
+import { usePlayer } from '~/engine/player'
 import { fileName, formatDuration } from './format'
 
 const open = defineModel<boolean>('open', { default: false })
@@ -23,6 +24,8 @@ const missing = ref<Set<string>>(new Set())
 const saving = ref(false)
 const relinking = ref(false)
 const message = ref<string | null>(null)
+
+const player = usePlayer()
 
 const zooms: SegmentOption<number>[] = [1, 4, 16, 64].map((value) => ({ value, label: `${value}×` }))
 
@@ -161,6 +164,15 @@ const footer = css({ display: 'flex', alignItems: 'center', justifyContent: 'spa
       <div :class="footer">
         <span :class="meta" role="status">{{ message }}</span>
         <div :class="toolbar">
+          <Button
+            icon="lucide:play"
+            :loading="player.loading.value"
+            :disabled="!song || missing.size > 0"
+            :title="missing.size ? 'Find the missing files first.' : undefined"
+            @click="song && player.play(edited(song))"
+          >
+            Play
+          </Button>
           <Button v-if="missing.size" icon="lucide:search" :loading="relinking" @click="relink">Find missing files…</Button>
           <Button variant="primary" :loading="saving" @click="save">Save</Button>
         </div>
