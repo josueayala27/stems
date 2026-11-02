@@ -12,6 +12,7 @@ Read these before changing a subsystem.
 | 04 | [UI](04-ui.md) | Workspaces, layouts, design system |
 | 05 | [Control and sync](05-control-sync.md) | MIDI, footswitches, timecode, Ableton Link, Lumen |
 | 06 | [Roadmap](06-roadmap.md) | Milestones M0–M7 |
+| 07 | [Delivery plan](07-plan.md) | Work, tests and exit checks for M1–M7, risks |
 
 ## Invariants
 
