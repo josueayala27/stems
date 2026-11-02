@@ -1,0 +1,45 @@
+{
+  "name": "desktop",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "nuxt dev --port 3100",
+    "build": "nuxt generate",
+    "desktop:dev": "tauri dev",
+    "desktop:build": "tauri build",
+    "postinstall": "nuxt prepare && panda codegen",
+    "check-types": "nuxt typecheck",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@floating-ui/vue": "^2.0.1",
+    "@nuxt/fonts": "1.0.1",
+    "@nuxt/icon": "2.5.1",
+    "@stems/core": "workspace:*",
+    "@stems/design": "workspace:*",
+    "@stems/schema": "workspace:*",
+    "@tauri-apps/api": "^2.9.0",
+    "@tauri-apps/plugin-log": "^2.7.1",
+    "@tauri-apps/plugin-sql": "^2.3.1",
+    "@vueuse/core": "^15.0.0",
+    "gsap": "^3.15.0",
+    "nuxt": "npm:nuxt-nightly@5.0.0-2610261521-c1a5a1f",
+    "vue": "^3.5.43",
+    "vue-router": "^5.3.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@iconify-json/lucide": "^1.2.147",
+    "@pandacss/dev": "^2.4.0",
+    "@pandacss/preset-base": "2.4.0",
+    "@pandacss/preset-panda": "2.4.0",
+    "@tauri-apps/cli": "^2.9.0",
+    "@types/node": "^24.19.2",
+    "@vitejs/plugin-vue": "^6.0.10",
+    "@vue/test-utils": "^2.5.1",
+    "happy-dom": "^21.0.4",
+    "typescript": "~5.9.3",
+    "vitest": "^5.0.5",
+    "vue-tsc": "^3.3.13"
+  }
+}

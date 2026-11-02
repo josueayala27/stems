@@ -1,0 +1,43 @@
+name: ci
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.19.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check-types
+      - run: pnpm test
+      - run: pnpm --filter desktop build
+
+  rust:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+      - name: Check
+        working-directory: apps/desktop/src-tauri
+        run: cargo check
+      - name: Clippy
+        working-directory: apps/desktop/src-tauri
+        run: cargo clippy -p stems-engine -p stems-control -p stems-library -- -D warnings
+      - name: Test
+        working-directory: apps/desktop/src-tauri
+        run: cargo test -p stems-engine -p stems-control -p stems-library

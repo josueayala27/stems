@@ -1,0 +1,30 @@
+[package]
+name = "stems-desktop"
+version = "0.0.1"
+description = "Stems live multitrack playback"
+edition = "2021"
+rust-version = "1.85"
+
+[lib]
+name = "stems_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+stems-control = { path = "crates/stems-control" }
+stems-engine = { path = "crates/stems-engine" }
+stems-library = { path = "crates/stems-library" }
+tauri = { version = "2", features = [] }
+tauri-plugin-log = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-sql = { version = "2", features = ["sqlite"] }
+
+[workspace]
+members = [".", "crates/stems-engine", "crates/stems-control", "crates/stems-library"]
+# Plain `cargo check` / `cargo test` cover every crate.
+default-members = [".", "crates/stems-engine", "crates/stems-control", "crates/stems-library"]
+resolver = "2"

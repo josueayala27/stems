@@ -1,0 +1,18 @@
+{
+  "name": "@stems/design",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/preset.ts"
+  },
+  "scripts": {
+    "check-types": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@pandacss/dev": "^2.4.0"
+  },
+  "devDependencies": {
+    "typescript": "~5.9.3"
+  }
+}
