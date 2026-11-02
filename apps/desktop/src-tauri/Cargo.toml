@@ -19,6 +19,7 @@ stems-control = { path = "crates/stems-control" }
 stems-engine = { path = "crates/stems-engine" }
 stems-library = { path = "crates/stems-library" }
 tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
 tauri-plugin-log = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-sql = { version = "2", features = ["sqlite"] }

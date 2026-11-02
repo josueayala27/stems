@@ -2,5 +2,12 @@
 name = "stems-library"
 version = "0.0.1"
 edition = "2021"
+rust-version = "1.85"
 
 [dependencies]
+blake3 = "1"
+serde = { version = "1", features = ["derive"] }
+stems-engine = { path = "../stems-engine" }
+
+[dev-dependencies]
+serde_json = "1"

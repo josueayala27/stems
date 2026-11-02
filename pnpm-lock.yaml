@@ -38,6 +38,9 @@ importers:
       '@tauri-apps/api':
         specifier: ^2.9.0
         version: 2.12.4
+      '@tauri-apps/plugin-dialog':
+        specifier: ^2.8.4
+        version: 2.8.4
       '@tauri-apps/plugin-log':
         specifier: ^2.7.1
         version: 2.10.1
@@ -275,8 +278,8 @@ packages:
       '@emnapi/core': ^1.7.1 || 2.0.0-beta.2
       '@emnapi/runtime': ^1.7.1 || 2.0.0-beta.2
 
-  '@nuxt/cli-nightly@4.0.1-2611021339-d65a045':
-    resolution: {integrity: sha512-Hvv84imhDaCRnAdHJ7WbQqZqtu6ZXFxqrcFNJrmKubuDdCXucTLLffGHYpmh3LcWzxv7BDvkcDaIrCFFoub8ow==}
+  '@nuxt/cli-nightly@4.0.2-2611022318-0a72949':
+    resolution: {integrity: sha512-KkxeToqU40BH5GqmrqvC3zRVpObouDZPPQ1JcMSDYzJJ72RT6Z6i0k4no/hZdNrlCn6xj1uLO4Kup6H7Amn3rg==}
     engines: {node: ^22.21.0 || ^24.11.0 || >=26.0.0}
     hasBin: true
     peerDependencies:
@@ -893,6 +896,9 @@ packages:
     resolution: {integrity: sha512-JI9bHfudSRJikGOrjbXEm6RjzzvmKuLc+JixB1NE8hNzQkNlCCIC3pTES3uypkR9lxHrsbxzcnSwhI2IxBQphw==}
     engines: {node: '>= 10'}
     hasBin: true
+
+  '@tauri-apps/plugin-dialog@2.8.4':
+    resolution: {integrity: sha512-+6ZOiXenOaxXwb8qCbBPdT2jX2cFPaVVHGIskrpmJLpmWj+qKRTD6X/z9x7hTdSQn7NedcoXCkWGej4a7dC4lw==}
 
   '@tauri-apps/plugin-log@2.10.1':
     resolution: {integrity: sha512-QYgxDunUZP+Cd3ev+8ItOc3Q6uUFkEhRHdTolxUtlC/8SGsc5IyVjGgFclprkAx736HUCUYfh2vqUr3qwNfTTw==}
@@ -2534,7 +2540,7 @@ snapshots:
       '@emnapi/runtime': 1.11.3
       '@tybys/wasm-util': 0.10.4
 
-  '@nuxt/cli-nightly@4.0.1-2611021339-d65a045(@nuxt/schema-nightly@5.0.0-2610261521-c1a5a1f)(jiti@2.7.0)(rolldown@1.2.16)(vite@8.3.5(@types/node@24.19.2)(jiti@2.7.0))':
+  '@nuxt/cli-nightly@4.0.2-2611022318-0a72949(@nuxt/schema-nightly@5.0.0-2610261521-c1a5a1f)(jiti@2.7.0)(rolldown@1.2.16)(vite@8.3.5(@types/node@24.19.2)(jiti@2.7.0))':
     dependencies:
       '@clack/prompts': 1.8.1
       args-tokenizer: 0.3.0
@@ -3220,6 +3226,10 @@ snapshots:
       '@tauri-apps/cli-win32-arm64-msvc': 2.12.4
       '@tauri-apps/cli-win32-ia32-msvc': 2.12.4
       '@tauri-apps/cli-win32-x64-msvc': 2.12.4
+
+  '@tauri-apps/plugin-dialog@2.8.4':
+    dependencies:
+      '@tauri-apps/api': 2.12.4
 
   '@tauri-apps/plugin-log@2.10.1':
     dependencies:
@@ -4014,7 +4024,7 @@ snapshots:
     dependencies:
       '@dxup/nuxt': 0.5.10(@nuxt/schema-nightly@5.0.0-2610261521-c1a5a1f)(confbox@0.3.2)(jiti@2.7.0)(mlly@1.8.2)(rolldown@1.2.16)(vite@8.3.5(@types/node@24.19.2)(jiti@2.7.0))
       '@jridgewell/trace-mapping': 0.3.31
-      '@nuxt/cli': '@nuxt/cli-nightly@4.0.1-2611021339-d65a045(@nuxt/schema-nightly@5.0.0-2610261521-c1a5a1f)(jiti@2.7.0)(rolldown@1.2.16)(vite@8.3.5(@types/node@24.19.2)(jiti@2.7.0))'
+      '@nuxt/cli': '@nuxt/cli-nightly@4.0.2-2611022318-0a72949(@nuxt/schema-nightly@5.0.0-2610261521-c1a5a1f)(jiti@2.7.0)(rolldown@1.2.16)(vite@8.3.5(@types/node@24.19.2)(jiti@2.7.0))'
       '@nuxt/devtools-onboard': 4.1.0(@nuxt/kit-nightly@5.0.0-2610261521-c1a5a1f(@nuxt/schema-nightly@5.0.0-2610261521-c1a5a1f)(confbox@0.3.2)(jiti@2.7.0)(magic-string@1.4.5)(mlly@1.8.2)(rolldown@1.2.16)(unplugin@3.7.0(rolldown@1.2.16)(vite@8.3.5(@types/node@24.19.2)(jiti@2.7.0))))
       '@nuxt/kit': '@nuxt/kit-nightly@5.0.0-2610261521-c1a5a1f(@nuxt/schema-nightly@5.0.0-2610261521-c1a5a1f)(confbox@0.3.2)(jiti@2.7.0)(magic-string@1.4.5)(mlly@1.8.2)(rolldown@1.2.16)(unplugin@3.7.0(rolldown@1.2.16)(vite@8.3.5(@types/node@24.19.2)(jiti@2.7.0)))'
       '@nuxt/nitro-server': '@nuxt/nitro-server-nightly@5.0.0-2610261521-c1a5a1f(@nuxt/schema-nightly@5.0.0-2610261521-c1a5a1f)(@oxc-project/types@0.156.0)(acorn@8.19.0)(confbox@0.3.2)(jiti@2.7.0)(lightningcss@1.33.0)(mlly@1.8.2)(nuxt-nightly@5.0.0-2610261521-c1a5a1f)(typescript@5.9.3)(vite@8.3.5(@types/node@24.19.2)(jiti@2.7.0))'

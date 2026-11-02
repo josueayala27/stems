@@ -1,6 +1,20 @@
-//! Library: stem import, hashing, waveform peaks and analysis. Decoding arrives in M2.
+//! Library: stem import, hashing, waveform peaks, tempo analysis and relinking
+//! (docs/architecture/07-plan.md, M2). Media stays the user's own files; the database (in the
+//! webview) stores paths and hashes, and this crate writes peak files next to it.
 
 use std::path::Path;
+
+pub mod analysis;
+mod error;
+pub mod hash;
+pub mod import;
+pub mod naming;
+pub mod peaks;
+pub mod relink;
+#[cfg(test)]
+pub(crate) mod testutil;
+
+pub use error::{LibraryError, Result};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
