@@ -80,6 +80,14 @@ const status = computed(() => {
   return null
 })
 
+/** CPU and dropouts: underruns mean the disk could not keep up, xruns that the device ran dry. */
+const health = computed(() => {
+  const state = player.state.value
+  if (!state) return null
+  const problems = state.underruns + state.xruns
+  return { label: `CPU ${Math.round(state.cpuLoad * 100)}%${problems ? ` · ${state.underruns} underruns · ${state.xruns} xruns` : ''}`, bad: problems > 0 }
+})
+
 const clickLevel = computed({ get: () => Math.round(options.click.gain * 100), set: (value: number) => (options.click.gain = value / 100) })
 const guideLevel = computed({ get: () => Math.round(options.guide.gain * 100), set: (value: number) => (options.guide.gain = value / 100) })
 
@@ -264,6 +272,7 @@ const errorText = css({ textStyle: 'ui.xs', color: 'danger.default', maxW: '[320
       </div>
       <Badge v-if="status" :tone="status.tone" dot :label="status.label" />
       <IconButton v-if="player.state.value?.armed !== 'none' && player.state.value" icon="lucide:x" label="Cancel (Esc)" size="sm" @click="player.cancelArmed()" />
+      <Badge v-if="health" :tone="health.bad ? 'danger' : 'neutral'" size="sm" :label="health.label" title="Audio engine load and dropouts since the device opened" />
       <span v-if="player.error.value" :class="errorText" role="alert" :title="player.error.value">{{ player.error.value }}</span>
 
       <span :class="spacer" />

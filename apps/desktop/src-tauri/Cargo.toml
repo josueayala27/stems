@@ -29,3 +29,18 @@ members = [".", "crates/stems-engine", "crates/stems-control", "crates/stems-lib
 # Plain `cargo check` / `cargo test` cover every crate.
 default-members = [".", "crates/stems-engine", "crates/stems-control", "crates/stems-library"]
 resolver = "2"
+
+# Audio must run in real time even in `tauri dev`. Unoptimized, decoding and resampling 12 stems
+# runs at about 1× real time and playback underruns once the in-memory heads run out. Optimize
+# every dependency and the engine crates; debug assertions (and the no-allocation checks) stay on.
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.dev.package.stems-engine]
+opt-level = 3
+
+[profile.dev.package.stems-library]
+opt-level = 3
+
+[profile.dev.package.stems-control]
+opt-level = 3
