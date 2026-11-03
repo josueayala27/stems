@@ -40,9 +40,26 @@ export function skipTarget(sections: readonly Span[], position: number): Span | 
   return next > 0 ? (sections[next] ?? null) : null
 }
 
+/** Engine state for Vue: replaced when anything but the clock moves, and at most 15 times a second otherwise. */
 const state = shallowRef<EngineState | null>(null)
-/** `performance.now()` when `state` arrived, for play-head interpolation. */
-const stateAt = ref(0)
+/** The newest state, not reactive: the play head reads it every animation frame. */
+let latest: EngineState | null = null
+/** `performance.now()` when `latest` arrived. */
+let latestAt = 0
+let lastPush = 0
+/** Re-render budget for the clock-only fields (position, meters, CPU). */
+const PUSH_MS = 66
+/** Fields that change every callback; anything else changing is pushed at once. */
+const FAST_FIELDS = new Set<keyof EngineState>(['position', 'clock', 'meters', 'master', 'cpuLoad', 'countIn', 'waiting'])
+
+/** True when a field other than the fast ones changed. */
+export function slowFieldsChanged(previous: EngineState | null, next: EngineState): boolean {
+  if (!previous) return true
+  for (const key of Object.keys(next) as (keyof EngineState)[]) {
+    if (!FAST_FIELDS.has(key) && previous[key] !== next[key]) return true
+  }
+  return false
+}
 const output = shallowRef<OpenedOutput | null>(null)
 const setlist = shallowRef<Setlist | null>(null)
 const songs = shallowRef<Song[]>([])
@@ -124,8 +141,13 @@ function listenOnce(): Promise<void> {
     listening = import('@tauri-apps/api/event')
       .then(({ listen }) =>
         listen<EngineState>(ENGINE_STATE_EVENT, (event) => {
-          state.value = event.payload
-          stateAt.value = performance.now()
+          const now = performance.now()
+          latest = event.payload
+          latestAt = now
+          if (slowFieldsChanged(state.value, event.payload) || now - lastPush >= PUSH_MS) {
+            state.value = event.payload
+            lastPush = now
+          }
           if (event.payload.songTag !== lastTag) {
             lastTag = event.payload.songTag
             followEngine(lastTag)
@@ -182,7 +204,6 @@ export function usePlayer() {
   void listenOnce()
   return {
     state,
-    stateAt,
     output,
     setlist,
     songs,
@@ -273,21 +294,46 @@ export function usePlayer() {
   }
 }
 
-/** The play head in engine frames, interpolated between state events while playing. */
+/** The play head in engine frames, interpolated from the newest state while playing. */
+export function livePosition(now: number = performance.now()): number {
+  const current = latest
+  if (!current) return 0
+  const elapsed = current.playing && current.countIn === 0 ? ((now - latestAt) / 1000) * current.sampleRate : 0
+  // Cap at one state interval ahead so a stalled engine never runs the play head away.
+  return Math.min(current.length, current.position + Math.min(elapsed, current.sampleRate / 20))
+}
+
+type PlayheadListener = (frames: number, length: number) => void
+const playheadListeners = new Set<PlayheadListener>()
+let playheadFrame = 0
+
+function playheadLoop() {
+  const frames = livePosition()
+  const length = latest?.length ?? 0
+  for (const listener of playheadListeners) listener(frames, length)
+  playheadFrame = playheadListeners.size ? requestAnimationFrame(playheadLoop) : 0
+}
+
+/**
+ * Call `listener` every animation frame with the play head, from one shared loop. For direct DOM
+ * writes (transforms, widths), so the play head moves without re-rendering Vue. Stops with the scope.
+ */
+export function onPlayhead(listener: PlayheadListener): void {
+  playheadListeners.add(listener)
+  if (!playheadFrame && typeof requestAnimationFrame !== 'undefined') playheadFrame = requestAnimationFrame(playheadLoop)
+  onScopeDispose(() => playheadListeners.delete(listener))
+}
+
+/** The play head for text readouts: interpolated, updated about 15 times a second. */
 export function useSmoothPosition() {
   const smooth = ref(0)
-  let frame = 0
-  const tick = () => {
-    const current = state.value
-    if (current) {
-      const elapsed = current.playing && current.countIn === 0 ? ((performance.now() - stateAt.value) / 1000) * current.sampleRate : 0
-      // Cap at one state interval ahead so a stalled engine never runs the play head away.
-      const ahead = Math.min(elapsed, current.sampleRate / 20)
-      smooth.value = Math.min(current.length, current.position + ahead)
+  let last = 0
+  onPlayhead((frames) => {
+    const now = performance.now()
+    if (now - last >= PUSH_MS) {
+      smooth.value = frames
+      last = now
     }
-    frame = requestAnimationFrame(tick)
-  }
-  if (typeof requestAnimationFrame !== 'undefined') frame = requestAnimationFrame(tick)
-  onScopeDispose(() => cancelAnimationFrame(frame))
+  })
   return smooth
 }

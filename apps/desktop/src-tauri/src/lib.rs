@@ -9,6 +9,11 @@ use stems_library::relink::{self, Found, Missing};
 use tauri::ipc::Response;
 use tauri::{Emitter, Manager, State};
 
+/// Run blocking work (engine round trips, file I/O) off the main thread and the async runtime.
+async fn blocking<T: Send + 'static>(work: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(work).await.map_err(|error| error.to_string())?
+}
+
 /// Versions of the Rust crates, for the About panel and bug reports.
 #[tauri::command]
 fn engine_info() -> serde_json::Value {
@@ -21,56 +26,61 @@ fn engine_info() -> serde_json::Value {
 
 #[tauri::command]
 async fn engine_devices(host: State<'_, EngineHost>) -> Result<Vec<DeviceInfo>, String> {
-    host.devices().map_err(|error| error.to_string())
+    let host = host.inner().clone();
+    blocking(move || host.devices().map_err(|error| error.to_string())).await
 }
 
 #[tauri::command]
 async fn engine_open(host: State<'_, EngineHost>, config: OutputConfig) -> Result<OpenedOutput, String> {
-    host.open(config).map_err(|error| error.to_string())
+    let host = host.inner().clone();
+    blocking(move || host.open(config).map_err(|error| error.to_string())).await
 }
 
 #[tauri::command]
 async fn engine_close(host: State<'_, EngineHost>) -> Result<(), String> {
-    host.close().map_err(|error| error.to_string())
+    let host = host.inner().clone();
+    blocking(move || host.close().map_err(|error| error.to_string())).await
 }
 
 /// Load a song document (the `@stems/schema` song) as the current song.
 #[tauri::command]
 async fn engine_load_song(host: State<'_, EngineHost>, song: SongDoc) -> Result<SongInfo, String> {
-    host.load_song(song).map_err(|error| error.to_string())
+    let host = host.inner().clone();
+    blocking(move || host.load_song(song).map_err(|error| error.to_string())).await
 }
 
 /// Preload the next setlist song and how to reach it.
 #[tauri::command]
 async fn engine_prepare_next(host: State<'_, EngineHost>, song: SongDoc, transition: TransitionDoc) -> Result<SongInfo, String> {
-    host.prepare_next(song, transition).map_err(|error| error.to_string())
+    let host = host.inner().clone();
+    blocking(move || host.prepare_next(song, transition).map_err(|error| error.to_string())).await
 }
 
 #[tauri::command]
 async fn engine_clear_next(host: State<'_, EngineHost>) -> Result<(), String> {
-    host.clear_next().map_err(|error| error.to_string())
+    let host = host.inner().clone();
+    blocking(move || host.clear_next().map_err(|error| error.to_string())).await
 }
 
 /// Click and guide settings.
 #[tauri::command]
 async fn engine_set_options(host: State<'_, EngineHost>, options: PerformOptions) -> Result<(), String> {
-    host.set_options(options).map_err(|error| error.to_string())
+    let host = host.inner().clone();
+    blocking(move || host.set_options(options).map_err(|error| error.to_string())).await
 }
 
 /// Crossfade to a pad file, or fade the pad out with `null`.
 #[tauri::command]
 async fn engine_set_pad(host: State<'_, EngineHost>, file: Option<PathBuf>) -> Result<(), String> {
-    host.set_pad(file).map_err(|error| error.to_string())
+    let host = host.inner().clone();
+    blocking(move || host.set_pad(file).map_err(|error| error.to_string())).await
 }
 
 /// A transport command, now or at `at` (a frame of the engine clock).
 #[tauri::command]
-fn engine_command(host: State<'_, EngineHost>, command: Transport, at: Option<u64>) -> Result<(), String> {
-    host.command(command, at).map_err(|error| error.to_string())
-}
-
-async fn blocking<T: Send + 'static>(work: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
-    tauri::async_runtime::spawn_blocking(work).await.map_err(|error| error.to_string())?
+async fn engine_command(host: State<'_, EngineHost>, command: Transport, at: Option<u64>) -> Result<(), String> {
+    let host = host.inner().clone();
+    blocking(move || host.command(command, at).map_err(|error| error.to_string())).await
 }
 
 /// Probe folders or files and report what would import (the import dialog preview).

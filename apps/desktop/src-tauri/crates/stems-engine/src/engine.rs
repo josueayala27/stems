@@ -283,100 +283,25 @@ impl Engine {
     }
 
     fn generated(&mut self, doc: &SongDoc, tempo: &TempoMap, length: u64) -> (Sampler, Sampler) {
-        let rate = self.sample_rate;
-        let click = click::click_track(tempo, length, &self.options.click, rate);
-        let cues: Vec<Cue> = doc
-            .sections
-            .iter()
-            .map(|section| Cue { name: section.name.clone(), start: to_device(section.start_sample, doc.sample_rate, rate) })
-            .collect();
         let voices = self.voices();
-        let guide = guide::guide_track(tempo, &cues, &voices, &self.options.guide, length);
-        (click, guide)
+        generated_tracks(doc, tempo, length, &self.options, &voices, self.sample_rate)
     }
 
-    /// Build a song: open its files (head and cue points decoded now), the click and guide tracks
-    /// and the timeline. Blocks while the heads decode.
-    fn build(&mut self, doc: &SongDoc) -> crate::Result<(Song, Vec<StreamFeeder>, SongInfo)> {
+    /// Everything needed to build a song, taken from the engine so the slow part (decoding
+    /// heads and cue points) can run on another thread. Cheap.
+    pub fn build_job(&mut self, doc: &SongDoc) -> BuildJob {
         let rate = self.sample_rate;
-        let doc = &doc.at_rate(rate);
+        let doc = doc.at_rate(rate);
         let tag = self.next_tag;
         self.next_tag += 1;
-        let mut cue_points: Vec<u64> = doc
-            .sections
-            .iter()
-            .map(|section| to_device(section.start_sample, doc.sample_rate, rate))
-            .chain(doc.markers.iter().map(|marker| to_device(marker.sample, doc.sample_rate, rate)))
-            .collect();
-        cue_points.sort_unstable();
-        cue_points.dedup();
-
-        let mut specs = Vec::with_capacity(doc.tracks.len() + 2);
-        let mut feeders = Vec::with_capacity(doc.tracks.len());
-        let mut tracks = Vec::with_capacity(doc.tracks.len());
-        for track in &doc.tracks {
-            let (source, feeder, info) = open_track(&track.file, rate, &cue_points)?;
-            specs.push(TrackSpec { source: Source::Stream(source), role: track.kind, gain: track.gain, muted: track.mute });
-            feeders.push(feeder);
-            tracks.push(info);
-        }
-        let length = tracks.iter().map(|track| track.frames).max().unwrap_or(0);
-        let tempo = self.timeline(doc);
-        let (click, guide) = self.generated(doc, &tempo, length);
-        let click_track = specs.len();
-        specs.push(TrackSpec {
-            source: Source::Sampler(Arc::new(click)),
-            role: TrackRole::Click,
-            gain: self.options.click.gain,
-            muted: !self.options.click.enabled,
-        });
-        let guide_track = specs.len();
-        specs.push(TrackSpec {
-            source: Source::Sampler(Arc::new(guide)),
-            role: TrackRole::Guide,
-            gain: self.options.guide.gain,
-            muted: !self.options.guide.enabled,
-        });
-
-        let sections = doc
-            .sections
-            .iter()
-            .map(|section| Span {
-                start: to_device(section.start_sample, doc.sample_rate, rate),
-                end: to_device(section.end_sample, doc.sample_rate, rate),
-            })
-            .collect();
-        let markers = doc
-            .markers
-            .iter()
-            .map(|marker| Marker { at: to_device(marker.sample, doc.sample_rate, rate), action: marker.action })
-            .collect();
-        let count_in = click::count_in(&tempo, &self.options.click, rate).map(|(sampler, frames)| (Arc::new(sampler), frames));
-        let timeline = Timeline { tempo, sections, markers, count_in };
-        let song = Song::build(tag, specs, timeline)?;
-        let info = SongInfo { tag, sample_rate: rate, length: song.length(), tracks, click_track, guide_track };
-        self.docs.insert(tag, doc.clone());
-        Ok((song, feeders, info))
+        let tempo = self.timeline(&doc);
+        let voices = self.voices();
+        BuildJob { tag, rate, doc, tempo, options: self.options.clone(), voices }
     }
 
-    /// Make `doc` the current song.
-    pub fn load_song(&mut self, doc: &SongDoc) -> crate::Result<SongInfo> {
-        let (song, feeders, info) = self.build(doc)?;
-        self.feeders.insert(info.tag, Feeder::spawn(feeders)?);
-        if let Err(error) = self.send(Command::LoadSong(Box::new(song))) {
-            self.feeders.remove(&info.tag);
-            return Err(error);
-        }
-        self.current = Some(info.tag);
-        Ok(info)
-    }
-
-    /// Preload `doc` as the next song, reached with `transition` when the current one ends.
-    pub fn prepare_next(&mut self, doc: &SongDoc, transition: TransitionDoc) -> crate::Result<SongInfo> {
-        let (song, feeders, info) = self.build(doc)?;
-        self.feeders.insert(info.tag, Feeder::spawn(feeders)?);
+    fn transition(&self, transition: TransitionDoc) -> Transition {
         let frames = |ms: u64| ms * u64::from(self.sample_rate) / 1_000;
-        let transition = Transition {
+        Transition {
             kind: match transition.kind {
                 TransitionKindDoc::Stop => TransitionKind::Stop,
                 TransitionKindDoc::Auto => TransitionKind::Auto,
@@ -384,12 +309,41 @@ impl Engine {
             },
             pre_wait: frames(transition.pre_wait_ms),
             crossfade: frames(transition.crossfade_ms),
+        }
+    }
+
+    /// Hand a built song to the mixer: as the current song, or as the next one.
+    pub fn install(&mut self, built: Built, next: Option<TransitionDoc>) -> crate::Result<SongInfo> {
+        let Built { song, feeders, info, doc } = built;
+        if info.sample_rate != self.sample_rate {
+            return Err(EngineError::Superseded);
+        }
+        self.feeders.insert(info.tag, Feeder::spawn(feeders)?);
+        let command = match next {
+            None => Command::LoadSong(Box::new(song)),
+            Some(transition) => Command::PrepareNext { song: Box::new(song), transition: self.transition(transition) },
         };
-        if let Err(error) = self.send(Command::PrepareNext { song: Box::new(song), transition }) {
+        if let Err(error) = self.send(command) {
             self.feeders.remove(&info.tag);
             return Err(error);
         }
+        self.docs.insert(info.tag, doc);
+        if next.is_none() {
+            self.current = Some(info.tag);
+        }
         Ok(info)
+    }
+
+    /// Make `doc` the current song, building it on this thread.
+    pub fn load_song(&mut self, doc: &SongDoc) -> crate::Result<SongInfo> {
+        let built = self.build_job(doc).run()?;
+        self.install(built, None)
+    }
+
+    /// Preload `doc` as the next song, reached with `transition` when the current one ends.
+    pub fn prepare_next(&mut self, doc: &SongDoc, transition: TransitionDoc) -> crate::Result<SongInfo> {
+        let built = self.build_job(doc).run()?;
+        self.install(built, Some(transition))
     }
 
     pub fn clear_next(&mut self) -> crate::Result<()> {
@@ -434,15 +388,141 @@ impl Engine {
 
     /// Crossfade to a pad decoded from `file`, or fade the pad out with `None`.
     pub fn set_pad(&mut self, file: Option<&Path>) -> crate::Result<()> {
-        let pad = match file {
-            Some(file) => {
-                let samples = decode_all(file, self.sample_rate)?;
-                Some(Box::new(Pad::new(&samples)))
-            }
-            None => None,
-        };
+        let pad = file.map(|file| decode_pad(file, self.sample_rate)).transpose()?;
+        self.install_pad(pad)
+    }
+
+    pub fn install_pad(&mut self, pad: Option<Box<Pad>>) -> crate::Result<()> {
         self.send(Command::SetPad(pad))
     }
+}
+
+/// Decode a pad file into a seamless loop. Slow: run it off the control thread.
+pub fn decode_pad(file: &Path, sample_rate: u32) -> crate::Result<Box<Pad>> {
+    let samples = decode_all(file, sample_rate)?;
+    Ok(Box::new(Pad::new(&samples)))
+}
+
+/// The slow half of loading a song. `Send`, so it runs on a worker thread.
+pub struct BuildJob {
+    tag: u64,
+    rate: u32,
+    doc: SongDoc,
+    tempo: TempoMap,
+    options: PerformOptions,
+    voices: Voices,
+}
+
+/// A song ready for [`Engine::install`].
+pub struct Built {
+    song: Song,
+    feeders: Vec<StreamFeeder>,
+    info: SongInfo,
+    doc: SongDoc,
+}
+
+impl Built {
+    pub fn tag(&self) -> u64 {
+        self.info.tag
+    }
+}
+
+impl BuildJob {
+    pub fn tag(&self) -> u64 {
+        self.tag
+    }
+
+    /// Open every track (in parallel: head and cue points decode now), build click, guide and
+    /// the timeline.
+    pub fn run(self) -> crate::Result<Built> {
+        let BuildJob { tag, rate, doc, tempo, options, voices } = self;
+        let mut cue_points: Vec<u64> = doc
+            .sections
+            .iter()
+            .map(|section| to_device(section.start_sample, doc.sample_rate, rate))
+            .chain(doc.markers.iter().map(|marker| to_device(marker.sample, doc.sample_rate, rate)))
+            .collect();
+        cue_points.sort_unstable();
+        cue_points.dedup();
+
+        let opened: Vec<crate::Result<_>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = doc
+                .tracks
+                .iter()
+                .map(|track| {
+                    let cue_points = &cue_points;
+                    scope.spawn(move || open_track(&track.file, rate, cue_points))
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap_or_else(|_| Err(EngineError::Decode("a track failed to open".into()))))
+                .collect()
+        });
+
+        let mut specs = Vec::with_capacity(doc.tracks.len() + 2);
+        let mut feeders = Vec::with_capacity(doc.tracks.len());
+        let mut tracks = Vec::with_capacity(doc.tracks.len());
+        for (track, result) in doc.tracks.iter().zip(opened) {
+            let (source, feeder, info) = result?;
+            specs.push(TrackSpec { source: Source::Stream(source), role: track.kind, gain: track.gain, muted: track.mute });
+            feeders.push(feeder);
+            tracks.push(info);
+        }
+        let length = tracks.iter().map(|track| track.frames).max().unwrap_or(0);
+        let (click, guide) = generated_tracks(&doc, &tempo, length, &options, &voices, rate);
+        let click_track = specs.len();
+        specs.push(TrackSpec {
+            source: Source::Sampler(Arc::new(click)),
+            role: TrackRole::Click,
+            gain: options.click.gain,
+            muted: !options.click.enabled,
+        });
+        let guide_track = specs.len();
+        specs.push(TrackSpec {
+            source: Source::Sampler(Arc::new(guide)),
+            role: TrackRole::Guide,
+            gain: options.guide.gain,
+            muted: !options.guide.enabled,
+        });
+
+        let sections = doc
+            .sections
+            .iter()
+            .map(|section| Span {
+                start: to_device(section.start_sample, doc.sample_rate, rate),
+                end: to_device(section.end_sample, doc.sample_rate, rate),
+            })
+            .collect();
+        let markers = doc
+            .markers
+            .iter()
+            .map(|marker| Marker { at: to_device(marker.sample, doc.sample_rate, rate), action: marker.action })
+            .collect();
+        let count_in = click::count_in(&tempo, &options.click, rate).map(|(sampler, frames)| (Arc::new(sampler), frames));
+        let timeline = Timeline { tempo, sections, markers, count_in };
+        let song = Song::build(tag, specs, timeline)?;
+        let info = SongInfo { tag, sample_rate: rate, length: song.length(), tracks, click_track, guide_track };
+        Ok(Built { song, feeders, info, doc })
+    }
+}
+
+fn generated_tracks(
+    doc: &SongDoc,
+    tempo: &TempoMap,
+    length: u64,
+    options: &PerformOptions,
+    voices: &Voices,
+    rate: u32,
+) -> (Sampler, Sampler) {
+    let click = click::click_track(tempo, length, &options.click, rate);
+    let cues: Vec<Cue> = doc
+        .sections
+        .iter()
+        .map(|section| Cue { name: section.name.clone(), start: to_device(section.start_sample, doc.sample_rate, rate) })
+        .collect();
+    let guide = guide::guide_track(tempo, &cues, voices, &options.guide, length);
+    (click, guide)
 }
 
 fn read_frames(reader: &mut FileReader, frames: usize) -> Vec<f32> {
@@ -545,7 +625,7 @@ mod tests {
             markers: vec![MarkerDoc { sample: 352_800, action: MarkerAction::Stop }],
         };
         let (mut engine, _mixer) = new(48_000);
-        let (song, _feeders, info) = engine.build(&doc).unwrap();
+        let Built { song, info, .. } = engine.build_job(&doc).run().unwrap();
         assert_eq!(info.length, 480_000);
         assert_eq!(song.section_at(100_000), Some(Span { start: 96_000, end: 288_000 }));
         assert_eq!(song.timeline.markers, vec![Marker { at: 384_000, action: MarkerAction::Stop }]);

@@ -17,6 +17,13 @@ export interface Peaks {
 }
 
 const MAGIC = 'STPK'
+const LITTLE_ENDIAN = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1
+
+function readBigEndianHost(view: DataView, offset: number, length: number): Int16Array {
+  const data = new Int16Array(length)
+  for (let i = 0; i < length; i++) data[i] = view.getInt16(offset + i * 2, true)
+  return data
+}
 const VERSION = 1
 
 export function parsePeaks(buffer: ArrayBuffer): Peaks {
@@ -36,9 +43,8 @@ export function parsePeaks(buffer: ArrayBuffer): Peaks {
     const peakCount = view.getUint32(28 + index * 8, true)
     const length = peakCount * 2
     if (buffer.byteLength < offset + length * 2) throw new Error('Peak file is truncated.')
-    // Copy: the data may not be 2-byte aligned for a direct view.
-    const data = new Int16Array(length)
-    for (let i = 0; i < length; i++) data[i] = view.getInt16(offset + i * 2, true)
+    // One copy into an aligned buffer. The file is little endian, like every platform Stems runs on.
+    const data = LITTLE_ENDIAN ? new Int16Array(buffer.slice(offset, offset + length * 2)) : readBigEndianHost(view, offset, length)
     levels.push({ framesPerPeak, data })
     offset += length * 2
   }

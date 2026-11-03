@@ -1,14 +1,18 @@
 <script setup lang="ts">
 // Track lanes: name, mute and solo, waveform from peak files, and the play head.
 import { css } from 'styled-system/css'
-import { shallowRef, watch } from 'vue'
+import { computed, ref, shallowRef, watch } from 'vue'
 import type { Peaks } from '~/audio/peaks'
 import Waveform from '~/audio/Waveform.vue'
 import { library } from '~/data/library'
-import { usePlayer, useSmoothPosition } from '~/engine/player'
+import { onPlayhead, usePlayer } from '~/engine/player'
 
 const player = usePlayer()
-const smooth = useSmoothPosition()
+/** One play-head line over every lane, moved by a transform each frame: no Vue re-render. */
+const headLine = ref<HTMLElement | null>(null)
+onPlayhead((frames, length) => {
+  if (headLine.value) headLine.value.style.transform = `translateX(${length > 0 ? (frames / length) * 100 : 0}%)`
+})
 const peaks = shallowRef<Record<string, Peaks | null>>({})
 const cache = new Map<string, Peaks | null>()
 
@@ -28,10 +32,7 @@ watch(
   { immediate: true },
 )
 
-function headPercent(): number {
-  const length = player.length.value
-  return length > 0 ? (smooth.value / length) * 100 : 0
-}
+const percent = computed(() => (player.length.value > 0 ? Math.round((player.position.value / player.length.value) * 100) : 0))
 
 function seek(event: MouseEvent) {
   if (player.locked.value) return
@@ -53,7 +54,10 @@ function rulerBlocks() {
 }
 
 
+const frame = css({ position: 'relative', flex: '1', minH: '0', display: 'flex', flexDirection: 'column' })
 const lanes = css({ flex: '1', minH: '0', display: 'flex', flexDirection: 'column', overflowY: 'auto' })
+const overlay = css({ position: 'absolute', top: '0', bottom: '0', left: '[200px]', right: '0', pointerEvents: 'none', overflow: 'hidden' })
+const line = css({ w: 'full', h: 'full', borderLeftWidth: '2px', borderColor: 'accent.default', willChange: 'transform', transform: 'translateX(0)' })
 const row = css({ display: 'grid', gridTemplateColumns: '[200px 1fr]', borderBottomWidth: '1px', borderColor: 'border.default', minH: '[56px]' })
 const head = css({ display: 'flex', alignItems: 'center', gap: '2', px: '3', minW: '0' })
 const name = css({ flex: '1', minW: '0', textStyle: 'ui.sm', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' })
@@ -75,7 +79,6 @@ const toggle = css({
   '&[aria-pressed=true][data-kind=solo]': { bg: 'accent.default', color: 'fg.onAccent', borderColor: 'accent.default' },
 })
 const lane = css({ position: 'relative', borderLeftWidth: '1px', borderColor: 'border.default', cursor: 'pointer', overflow: 'hidden' })
-const playhead = css({ position: 'absolute', top: '0', bottom: '0', w: '[2px]', bg: 'accent.default', pointerEvents: 'none', transform: 'translateX(-1px)' })
 const ruler = css({ position: 'relative', h: 'control.lg', borderLeftWidth: '1px', borderColor: 'border.default', cursor: 'pointer' })
 const block = css({
   position: 'absolute',
@@ -98,12 +101,12 @@ const label = css({ display: 'flex', alignItems: 'center', px: '3', textStyle: '
 </script>
 
 <template>
+  <div :class="frame">
   <div :class="lanes">
     <div :class="[row, rulerRow]">
       <span :class="label">Tracks</span>
-      <div :class="ruler" role="slider" aria-label="Song position" :aria-valuenow="Math.round(headPercent())" aria-valuemin="0" aria-valuemax="100" @click="seek">
+      <div :class="ruler" role="slider" aria-label="Song position" :aria-valuenow="percent" aria-valuemin="0" aria-valuemax="100" @click="seek">
         <span v-for="(item, at) in rulerBlocks()" :key="at" :class="block" :style="{ left: `${item.left}%`, width: `${item.width}%` }">{{ item.name }}</span>
-        <span :class="playhead" :style="{ left: `${headPercent()}%` }" />
       </div>
     </div>
     <div v-for="(track, at) in player.song.value?.tracks ?? []" :key="track.id" :class="row">
@@ -131,8 +134,9 @@ const label = css({ display: 'flex', alignItems: 'center', px: '3', textStyle: '
       </div>
       <div :class="lane" @click="seek">
         <Waveform :peaks="peaks[track.id] ?? null" :color="track.color" :height="56" :aria-label="`${track.name} waveform`" />
-        <span :class="playhead" :style="{ left: `${headPercent()}%` }" />
       </div>
     </div>
+  </div>
+  <div :class="overlay" aria-hidden="true"><div ref="headLine" :class="line" /></div>
   </div>
 </template>

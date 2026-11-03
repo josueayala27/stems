@@ -1,5 +1,9 @@
 //! The control thread. It owns the device stream (not `Send` on every platform), the engine
-//! handle and the song's disk thread, publishes state at about 60 Hz and reopens a lost device.
+//! handle and the songs' disk threads, publishes state at about 60 Hz and reopens a lost device.
+//!
+//! It never does slow work itself: songs and pads decode on worker threads and come back as
+//! finished jobs, so commands are answered at once even while the next song loads. When requests
+//! overlap, the newest wins and older ones are answered with `Superseded`.
 
 use std::path::PathBuf;
 use std::sync::mpsc::{self, RecvTimeoutError};
@@ -8,8 +12,9 @@ use std::time::{Duration, Instant};
 
 use crate::command::{At, Command, Transport};
 use crate::device::{self, DeviceInfo, OpenedOutput, Output, OutputConfig};
-use crate::engine::{self, Engine, PerformOptions, SongDoc, SongInfo, TransitionDoc};
+use crate::engine::{self, Built, Engine, PerformOptions, SongDoc, SongInfo, TransitionDoc};
 use crate::mixer::Mixer;
+use crate::pad::Pad;
 use crate::state::EngineState;
 use crate::EngineError;
 
@@ -18,6 +23,12 @@ const REOPEN_INTERVAL: Duration = Duration::from_secs(1);
 const MIXER_RETURN_TIMEOUT: Duration = Duration::from_secs(2);
 
 type Reply<T> = mpsc::Sender<crate::Result<T>>;
+
+/// A job a worker thread finished.
+enum Finished {
+    Song { tag: u64, built: crate::Result<Box<Built>>, doc: Box<SongDoc>, next: Option<TransitionDoc>, reply: Reply<SongInfo> },
+    Pad { serial: u64, pad: crate::Result<Box<Pad>>, file: PathBuf, reply: Reply<()> },
+}
 
 enum Request {
     Devices(Reply<Vec<DeviceInfo>>),
@@ -33,7 +44,8 @@ enum Request {
     State(Reply<Option<EngineState>>),
 }
 
-/// Handle to the control thread. Cheap to share; every call is a message and a reply.
+/// Handle to the control thread. Cheap to clone; every call is a message and a reply.
+#[derive(Clone)]
 pub struct EngineHost {
     requests: mpsc::Sender<Request>,
 }
@@ -118,11 +130,18 @@ struct Control {
     last_reopen: Instant,
     /// The device failed and the control thread is reopening it.
     lost: bool,
+    finished_tx: mpsc::Sender<Finished>,
+    finished: mpsc::Receiver<Finished>,
+    /// Tags of the newest current-song and next-song loads, and the newest pad request.
+    latest_current: u64,
+    latest_next: u64,
+    latest_pad: u64,
 }
 
 impl Control {
     fn new(on_state: Box<dyn FnMut(&EngineState) + Send>) -> Self {
         let (mixer_home, mixers) = mpsc::channel();
+        let (finished_tx, finished) = mpsc::channel();
         Self {
             on_state,
             engine: None,
@@ -137,6 +156,11 @@ impl Control {
             parked: None,
             last_reopen: Instant::now(),
             lost: false,
+            finished_tx,
+            finished,
+            latest_current: 0,
+            latest_next: 0,
+            latest_pad: 0,
         }
     }
 
@@ -146,6 +170,9 @@ impl Control {
                 Ok(request) => self.handle(request),
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => break,
+            }
+            while let Ok(job) = self.finished.try_recv() {
+                self.finish(job);
             }
             self.tick();
         }
@@ -174,22 +201,11 @@ impl Control {
                 }
                 let _ = reply.send(result);
             }
-            Request::LoadSong(doc, reply) => {
-                let result = self.with_engine(|engine| engine.load_song(&doc));
-                if result.is_ok() {
-                    self.song = Some(*doc);
-                }
-                let _ = reply.send(result);
-            }
-            Request::PrepareNext(doc, transition, reply) => {
-                let result = self.with_engine(|engine| engine.prepare_next(&doc, transition));
-                if result.is_ok() {
-                    self.next = Some((*doc, transition));
-                }
-                let _ = reply.send(result);
-            }
+            Request::LoadSong(doc, reply) => self.build(doc, None, reply),
+            Request::PrepareNext(doc, transition, reply) => self.build(doc, Some(transition), reply),
             Request::ClearNext(reply) => {
                 self.next = None;
+                self.latest_next = 0;
                 let _ = reply.send(self.with_engine(Engine::clear_next));
             }
             Request::SetOptions(options, reply) => {
@@ -201,11 +217,27 @@ impl Control {
                 let _ = reply.send(result);
             }
             Request::SetPad(file, reply) => {
-                let result = self.with_engine(|engine| engine.set_pad(file.as_deref()));
-                if result.is_ok() {
-                    self.pad = file;
+                self.latest_pad += 1;
+                let Some(engine) = self.engine.as_mut() else {
+                    let _ = reply.send(Err(EngineError::NotOpen));
+                    return;
+                };
+                match file {
+                    None => {
+                        let result = engine.install_pad(None);
+                        if result.is_ok() {
+                            self.pad = None;
+                        }
+                        let _ = reply.send(result);
+                    }
+                    Some(file) => {
+                        let (serial, rate, done) = (self.latest_pad, engine.sample_rate(), self.finished_tx.clone());
+                        spawn_worker(move || {
+                            let pad = engine::decode_pad(&file, rate);
+                            let _ = done.send(Finished::Pad { serial, pad, file, reply });
+                        });
+                    }
                 }
-                let _ = reply.send(result);
             }
             Request::Command(at, transport, reply) => {
                 let result = match self.engine.as_mut() {
@@ -216,6 +248,59 @@ impl Control {
             }
             Request::State(reply) => {
                 let _ = reply.send(Ok(self.engine.as_mut().map(Engine::state)));
+            }
+        }
+    }
+
+    /// Start building a song on a worker thread. `next` is the transition when it is the next song.
+    fn build(&mut self, doc: Box<SongDoc>, next: Option<TransitionDoc>, reply: Reply<SongInfo>) {
+        let Some(engine) = self.engine.as_mut() else {
+            let _ = reply.send(Err(EngineError::NotOpen));
+            return;
+        };
+        let job = engine.build_job(&doc);
+        let tag = job.tag();
+        if next.is_some() {
+            self.latest_next = tag;
+        } else {
+            self.latest_current = tag;
+        }
+        let done = self.finished_tx.clone();
+        spawn_worker(move || {
+            let built = job.run().map(Box::new);
+            let _ = done.send(Finished::Song { tag, built, doc, next, reply });
+        });
+    }
+
+    fn finish(&mut self, job: Finished) {
+        match job {
+            Finished::Song { tag, built, doc, next, reply } => {
+                let latest = if next.is_some() { self.latest_next } else { self.latest_current };
+                let result = match (built, self.engine.as_mut()) {
+                    (_, _) if tag != latest => Err(EngineError::Superseded),
+                    (Err(error), _) => Err(error),
+                    (Ok(_), None) => Err(EngineError::NotOpen),
+                    (Ok(built), Some(engine)) => engine.install(*built, next),
+                };
+                if result.is_ok() {
+                    match next {
+                        Some(transition) => self.next = Some((*doc, transition)),
+                        None => self.song = Some(*doc),
+                    }
+                }
+                let _ = reply.send(result);
+            }
+            Finished::Pad { serial, pad, file, reply } => {
+                let result = match (pad, self.engine.as_mut()) {
+                    (_, _) if serial != self.latest_pad => Err(EngineError::Superseded),
+                    (Err(error), _) => Err(error),
+                    (Ok(_), None) => Err(EngineError::NotOpen),
+                    (Ok(pad), Some(engine)) => engine.install_pad(Some(pad)),
+                };
+                if result.is_ok() {
+                    self.pad = Some(file);
+                }
+                let _ = reply.send(result);
             }
         }
     }
@@ -295,4 +380,10 @@ impl Control {
             (self.on_state)(&state);
         }
     }
+}
+
+fn spawn_worker(work: impl FnOnce() + Send + 'static) {
+    // If the thread cannot start, `work` (and its reply sender) is dropped and the caller sees
+    // `Disconnected` instead of waiting forever.
+    let _ = thread::Builder::new().name("stems-load".into()).spawn(work);
 }

@@ -3,12 +3,22 @@
 // section: vamp it until released.
 import { css } from 'styled-system/css'
 import { Icon } from '#components'
-import { computed, onBeforeUnmount } from 'vue'
-import { usePlayer, useSmoothPosition } from '~/engine/player'
+import { computed, onBeforeUnmount, ref } from 'vue'
+import { onPlayhead, usePlayer } from '~/engine/player'
 
 const HOLD_MS = 350
 const player = usePlayer()
-const smooth = useSmoothPosition()
+const fills = ref<HTMLElement[]>([])
+
+// Progress of the current section, written straight to the DOM every frame.
+onPlayhead((frames) => {
+  const at = player.sectionIndex.value
+  fills.value.forEach((fill, index) => {
+    const section = player.sections.value[index]
+    const ratio = section && index === at ? Math.min(1, Math.max(0, (frames - section.start) / (section.end - section.start))) : 0
+    fill.style.transform = `scaleX(${ratio})`
+  })
+})
 
 let holdTimer: ReturnType<typeof setTimeout> | null = null
 let held = false
@@ -48,12 +58,6 @@ const armedTarget = computed(() => {
   return state?.armed === 'jump' ? state.armedTo : null
 })
 
-function progress(at: number): number {
-  const section = player.sections.value[at]
-  if (!section || at !== player.sectionIndex.value) return 0
-  return Math.min(1, Math.max(0, (smooth.value - section.start) / (section.end - section.start)))
-}
-
 const strip = css({ display: 'flex', gap: '1.5', p: '3', flexShrink: '0', borderBottomWidth: '1px', borderColor: 'border.default', overflowX: 'auto' })
 const chip = css({
   position: 'relative',
@@ -80,7 +84,7 @@ const chip = css({
   '&[data-armed=true]': { borderColor: 'warning.default', borderStyle: 'dashed', borderWidth: '2px' },
   _focusVisible: { outlineWidth: '2px', outlineStyle: 'solid', outlineColor: 'accent.default', outlineOffset: '[2px]' },
 })
-const fill = css({ position: 'absolute', left: '0', bottom: '0', h: '[3px]', bg: 'accent.default' })
+const fill = css({ position: 'absolute', left: '0', right: '0', bottom: '0', h: '[3px]', bg: 'accent.default', transformOrigin: 'left', transform: 'scaleX(0)', willChange: 'transform' })
 const key = css({ textStyle: 'ui.xs', color: 'fg.subtle', fontFamily: 'mono' })
 const empty = css({ textStyle: 'ui.sm', color: 'fg.subtle', px: '1', alignSelf: 'center' })
 </script>
@@ -110,7 +114,7 @@ const empty = css({ textStyle: 'ui.sm', color: 'fg.subtle', px: '1', alignSelf: 
         <Icon v-if="at === player.sectionIndex.value && player.state.value?.vamping" name="lucide:repeat" :size="12" aria-hidden="true" />
         <template v-else-if="at < 9">{{ at + 1 }}</template>
       </span>
-      <span :class="fill" :style="{ width: `${progress(at) * 100}%` }" aria-hidden="true" />
+      <span ref="fills" :class="fill" aria-hidden="true" />
     </button>
   </div>
 </template>

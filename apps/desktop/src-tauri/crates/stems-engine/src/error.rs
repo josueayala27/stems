@@ -16,6 +16,8 @@ pub enum EngineError {
     TooManyTracks(usize),
     /// The control thread is gone.
     Disconnected,
+    /// A newer request replaced this one before it finished (or the device rate changed).
+    Superseded,
 }
 
 impl fmt::Display for EngineError {
@@ -30,6 +32,7 @@ impl fmt::Display for EngineError {
                 write!(f, "{count} tracks is more than the limit of {}", crate::MAX_TRACKS)
             }
             Self::Disconnected => write!(f, "the engine thread has stopped"),
+            Self::Superseded => write!(f, "replaced by a newer request"),
         }
     }
 }

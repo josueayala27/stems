@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { songFromImport } from '~/data/importSong'
-import { engineSections, sectionIndexAt, skipTarget, type Span } from './player'
+import type { EngineState } from './engine'
+import { engineSections, sectionIndexAt, skipTarget, slowFieldsChanged, type Span } from './player'
 
 const sections: Span[] = [
   { name: 'Intro', start: 0, end: 100 },
@@ -33,5 +34,15 @@ describe('sections', () => {
       { name: 'Verse', start: 0, end: 48_000 },
       { name: 'Chorus', start: 48_000, end: 96_000 },
     ])
+  })
+})
+
+describe('slowFieldsChanged', () => {
+  const base = { playing: true, position: 0, clock: 0, meters: [0], songTag: 1, armed: 'none', cpuLoad: 0.1 } as unknown as EngineState
+  it('ignores the clock and meters but not transport changes', () => {
+    expect(slowFieldsChanged(null, base)).toBe(true)
+    expect(slowFieldsChanged(base, { ...base, position: 480, clock: 480, meters: [0.5], cpuLoad: 0.2 })).toBe(false)
+    expect(slowFieldsChanged(base, { ...base, playing: false })).toBe(true)
+    expect(slowFieldsChanged(base, { ...base, armed: 'jump' })).toBe(true)
   })
 })
