@@ -17,6 +17,9 @@ use crate::CHANNELS;
 pub const BLOCK_FRAMES: usize = 1024;
 /// Seconds of each track kept in memory from the start.
 pub const HEAD_SECONDS: u64 = 5;
+/// Seconds kept in memory from each cue point (section starts, markers), so a quantized jump
+/// plays at once while the disk thread refills from there.
+pub const CUE_SECONDS: f64 = 1.5;
 /// Seconds of decoded audio each ring holds ahead of the play head.
 pub const LOOKAHEAD_SECONDS: u64 = 2;
 
@@ -80,9 +83,23 @@ struct Shared {
     end: AtomicU64,
 }
 
+/// Audio held in memory from `start`, stereo interleaved.
+#[derive(Clone)]
+pub struct Head {
+    pub start: u64,
+    pub samples: Arc<[f32]>,
+}
+
+impl Head {
+    fn end(&self) -> u64 {
+        self.start + (self.samples.len() / CHANNELS) as u64
+    }
+}
+
 /// Real-time side of a streamed track.
 pub struct StreamSource {
-    head: Arc<[f32]>,
+    /// Sorted by start; the first starts at 0.
+    heads: Vec<Head>,
     head_frames: u64,
     frames: u64,
     generation: u16,
@@ -119,15 +136,29 @@ pub fn stream(
     reader: Box<dyn FrameReader>,
     ring_blocks: usize,
 ) -> (StreamSource, StreamFeeder) {
+    stream_with_cues(head, Vec::new(), frames, reader, ring_blocks)
+}
+
+/// Like [`stream`], with extra in-memory heads at cue points (each must start after `head`).
+pub fn stream_with_cues(
+    head: impl Into<Arc<[f32]>>,
+    cues: Vec<Head>,
+    frames: u64,
+    reader: Box<dyn FrameReader>,
+    ring_blocks: usize,
+) -> (StreamSource, StreamFeeder) {
     let head: Arc<[f32]> = head.into();
     let head_frames = (head.len() / CHANNELS) as u64;
+    let mut heads = vec![Head { start: 0, samples: head }];
+    heads.extend(cues.into_iter().filter(|cue| cue.start >= head_frames && !cue.samples.is_empty()));
+    heads.sort_by_key(|head| head.start);
     let shared = Arc::new(Shared {
         request: AtomicU64::new(pack(0, head_frames)),
         end: AtomicU64::new(pack(0, POSITION_MASK)),
     });
     let (producer, consumer) = rtrb::RingBuffer::new(ring_blocks.max(2));
     let source = StreamSource {
-        head,
+        heads,
         head_frames,
         frames,
         generation: 0,
@@ -156,9 +187,15 @@ impl StreamSource {
         self.frames
     }
 
+    fn head_at(&self, frame: u64) -> Option<&Head> {
+        let index = self.heads.partition_point(|head| head.start <= frame);
+        self.heads[..index].last().filter(|head| frame < head.end())
+    }
+
     pub fn seek(&mut self, position: u64) {
         self.generation = self.generation.wrapping_add(1);
-        let from = position.max(self.head_frames);
+        // Inside a head, the disk thread starts where the head ends.
+        let from = self.head_at(position).map_or(position, Head::end).max(self.head_frames);
         self.shared.request.store(pack(self.generation, from), Ordering::Release);
         // Free the ring now so the disk thread can refill it at once. A block pushed before the
         // disk thread saw the request still has the old generation and is dropped on read.
@@ -185,11 +222,11 @@ impl StreamSource {
                 out[done * CHANNELS..].fill(0.0);
                 break;
             }
-            if frame < self.head_frames {
-                let count = rest.min((self.head_frames - frame) as usize);
-                let from = frame as usize * CHANNELS;
+            if let Some(head) = self.head_at(frame) {
+                let count = rest.min((head.end() - frame) as usize);
+                let from = (frame - head.start) as usize * CHANNELS;
                 out[done * CHANNELS..(done + count) * CHANNELS]
-                    .copy_from_slice(&self.head[from..from + count * CHANNELS]);
+                    .copy_from_slice(&head.samples[from..from + count * CHANNELS]);
                 done += count;
                 continue;
             }
@@ -369,6 +406,27 @@ mod tests {
         assert!(!underrun);
         assert_eq!(out[..2_000 * CHANNELS], ramp(2_000)[..]);
         assert!(out[2_000 * CHANNELS..].iter().all(|&s| s == 0.0));
+    }
+
+    #[test]
+    fn a_seek_to_a_cue_plays_from_memory_at_once() {
+        let all = ramp(40_000);
+        let mut reader = MemoryReader::new(all.clone());
+        reader.seek(100).unwrap();
+        let cue = Head { start: 30_000, samples: all[30_000 * CHANNELS..31_000 * CHANNELS].into() };
+        let (mut source, mut feeder) =
+            stream_with_cues(all[..100 * CHANNELS].to_vec(), vec![cue], 40_000, Box::new(reader), 4);
+        feeder.fill();
+        source.seek(30_000);
+        // No fill yet: the cue covers the first 1 000 frames.
+        let mut out = vec![0.0; 1_000 * CHANNELS];
+        assert!(!source.read(30_000, &mut out));
+        assert_eq!(out, ramp(31_000)[30_000 * CHANNELS..]);
+        // The disk thread continues from the cue's end.
+        feeder.fill();
+        let mut next = vec![0.0; 2 * CHANNELS];
+        assert!(!source.read(31_000, &mut next));
+        assert_eq!(next, [31_000.0, -31_000.0, 31_001.0, -31_001.0]);
     }
 
     #[test]

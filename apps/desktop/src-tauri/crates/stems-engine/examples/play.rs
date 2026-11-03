@@ -29,7 +29,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let host = EngineHost::spawn(|_| {})?;
     let output = host.open(OutputConfig { buffer_size: buffer, ..Default::default() })?;
     println!("{} at {} Hz, {} frames, {} channels", output.name, output.sample_rate, output.buffer_size, output.channels);
-    let song = host.load_song(files)?;
+    let song = host.load_files(files)?;
     println!("{} tracks, {:.1} s", song.tracks.len(), song.length as f64 / f64::from(song.sample_rate));
     host.command(Transport::Play, None)?;
 

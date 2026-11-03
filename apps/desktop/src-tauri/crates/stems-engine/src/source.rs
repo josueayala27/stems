@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crate::sampler::Sampler;
 use crate::stream::StreamSource;
 use crate::CHANNELS;
 
@@ -10,6 +11,8 @@ pub enum Source {
     Memory(MemorySource),
     /// Head in memory, the rest streamed from disk.
     Stream(StreamSource),
+    /// Generated one-shots: click, guide.
+    Sampler(Arc<Sampler>),
 }
 
 impl Source {
@@ -23,6 +26,7 @@ impl Source {
         match self {
             Self::Memory(source) => (source.samples.len() / CHANNELS) as u64,
             Self::Stream(source) => source.frames(),
+            Self::Sampler(sampler) => sampler.length(),
         }
     }
 
@@ -43,6 +47,10 @@ impl Source {
                 false
             }
             Self::Stream(source) => source.read(position, out),
+            Self::Sampler(sampler) => {
+                sampler.read(position, out);
+                false
+            }
         }
     }
 }

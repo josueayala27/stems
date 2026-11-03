@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use crate::command::{At, Command, Transport};
 use crate::device::{self, DeviceInfo, OpenedOutput, Output, OutputConfig};
-use crate::engine::{self, Engine, SongInfo};
+use crate::engine::{self, Engine, PerformOptions, SongDoc, SongInfo, TransitionDoc};
 use crate::mixer::Mixer;
 use crate::state::EngineState;
 use crate::EngineError;
@@ -23,7 +23,12 @@ enum Request {
     Devices(Reply<Vec<DeviceInfo>>),
     Open(OutputConfig, Reply<OpenedOutput>),
     Close(Reply<()>),
-    LoadSong(Vec<PathBuf>, Reply<SongInfo>),
+    LoadFiles(Vec<PathBuf>, Reply<SongInfo>),
+    LoadSong(Box<SongDoc>, Reply<SongInfo>),
+    PrepareNext(Box<SongDoc>, TransitionDoc, Reply<SongInfo>),
+    ClearNext(Reply<()>),
+    SetOptions(PerformOptions, Reply<()>),
+    SetPad(Option<PathBuf>, Reply<()>),
     Command(Option<u64>, Transport, Reply<()>),
     State(Reply<Option<EngineState>>),
 }
@@ -61,8 +66,29 @@ impl EngineHost {
         self.call(Request::Close)
     }
 
-    pub fn load_song(&self, paths: Vec<PathBuf>) -> crate::Result<SongInfo> {
-        self.call(|reply| Request::LoadSong(paths, reply))
+    /// Plain files as one song, no timeline.
+    pub fn load_files(&self, paths: Vec<PathBuf>) -> crate::Result<SongInfo> {
+        self.call(|reply| Request::LoadFiles(paths, reply))
+    }
+
+    pub fn load_song(&self, doc: SongDoc) -> crate::Result<SongInfo> {
+        self.call(|reply| Request::LoadSong(Box::new(doc), reply))
+    }
+
+    pub fn prepare_next(&self, doc: SongDoc, transition: TransitionDoc) -> crate::Result<SongInfo> {
+        self.call(|reply| Request::PrepareNext(Box::new(doc), transition, reply))
+    }
+
+    pub fn clear_next(&self) -> crate::Result<()> {
+        self.call(Request::ClearNext)
+    }
+
+    pub fn set_options(&self, options: PerformOptions) -> crate::Result<()> {
+        self.call(|reply| Request::SetOptions(options, reply))
+    }
+
+    pub fn set_pad(&self, file: Option<PathBuf>) -> crate::Result<()> {
+        self.call(|reply| Request::SetPad(file, reply))
     }
 
     /// Send a transport command, at once or at a frame of the engine clock.
@@ -80,7 +106,11 @@ struct Control {
     engine: Option<Engine>,
     output: Option<Output>,
     config: Option<OutputConfig>,
-    song: Vec<PathBuf>,
+    /// What is loaded, to rebuild after a sample-rate change.
+    song: Option<SongDoc>,
+    next: Option<(SongDoc, TransitionDoc)>,
+    options: PerformOptions,
+    pad: Option<PathBuf>,
     mixer_home: mpsc::Sender<Mixer>,
     mixers: mpsc::Receiver<Mixer>,
     /// The mixer while no stream holds it.
@@ -98,7 +128,10 @@ impl Control {
             engine: None,
             output: None,
             config: None,
-            song: Vec::new(),
+            song: None,
+            next: None,
+            options: PerformOptions::default(),
+            pad: None,
             mixer_home,
             mixers,
             parked: None,
@@ -134,13 +167,43 @@ impl Control {
                 self.lost = false;
                 let _ = reply.send(Ok(()));
             }
-            Request::LoadSong(paths, reply) => {
-                let result = match self.engine.as_mut() {
-                    Some(engine) => engine.load_files(&paths),
-                    None => Err(EngineError::NotOpen),
-                };
+            Request::LoadFiles(paths, reply) => {
+                let result = self.with_engine(|engine| engine.load_files(&paths));
                 if result.is_ok() {
-                    self.song = paths;
+                    self.song = Some(SongDoc::from_files(&paths, 0));
+                }
+                let _ = reply.send(result);
+            }
+            Request::LoadSong(doc, reply) => {
+                let result = self.with_engine(|engine| engine.load_song(&doc));
+                if result.is_ok() {
+                    self.song = Some(*doc);
+                }
+                let _ = reply.send(result);
+            }
+            Request::PrepareNext(doc, transition, reply) => {
+                let result = self.with_engine(|engine| engine.prepare_next(&doc, transition));
+                if result.is_ok() {
+                    self.next = Some((*doc, transition));
+                }
+                let _ = reply.send(result);
+            }
+            Request::ClearNext(reply) => {
+                self.next = None;
+                let _ = reply.send(self.with_engine(Engine::clear_next));
+            }
+            Request::SetOptions(options, reply) => {
+                self.options = options.clone();
+                let result = match self.engine.as_mut() {
+                    Some(engine) => engine.set_options(options),
+                    None => Ok(()),
+                };
+                let _ = reply.send(result);
+            }
+            Request::SetPad(file, reply) => {
+                let result = self.with_engine(|engine| engine.set_pad(file.as_deref()));
+                if result.is_ok() {
+                    self.pad = file;
                 }
                 let _ = reply.send(result);
             }
@@ -154,6 +217,13 @@ impl Control {
             Request::State(reply) => {
                 let _ = reply.send(Ok(self.engine.as_mut().map(Engine::state)));
             }
+        }
+    }
+
+    fn with_engine<T>(&mut self, work: impl FnOnce(&mut Engine) -> crate::Result<T>) -> crate::Result<T> {
+        match self.engine.as_mut() {
+            Some(engine) => work(engine),
+            None => Err(EngineError::NotOpen),
         }
     }
 
@@ -173,10 +243,21 @@ impl Control {
         let mixer = match self.parked.take() {
             Some(mixer) if same_rate => mixer,
             _ => {
-                // A new rate needs a new mixer, and the song decoded again at that rate.
+                // A new rate needs a new mixer, and the songs decoded again at that rate.
                 let (mut engine, mixer) = engine::new(rate);
-                if !self.song.is_empty() && engine.load_files(&self.song).is_err() {
-                    self.song.clear();
+                let _ = engine.set_options(self.options.clone());
+                if let Some(doc) = &self.song {
+                    if engine.load_song(doc).is_err() {
+                        self.song = None;
+                    }
+                }
+                if let Some((doc, transition)) = &self.next {
+                    if engine.prepare_next(doc, *transition).is_err() {
+                        self.next = None;
+                    }
+                }
+                if self.pad.is_some() && engine.set_pad(self.pad.as_deref()).is_err() {
+                    self.pad = None;
                 }
                 self.engine = Some(engine);
                 mixer

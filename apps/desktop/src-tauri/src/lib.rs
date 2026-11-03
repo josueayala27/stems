@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use stems_engine::device::{DeviceInfo, OpenedOutput, OutputConfig};
+use stems_engine::engine::{PerformOptions, SongDoc, TransitionDoc};
 use stems_engine::host::EngineHost;
 use stems_engine::{SongInfo, StateEvent, Transport};
 use stems_library::import::{self, ImportMode, ImportedSong, Library, Rejected};
@@ -33,9 +34,33 @@ async fn engine_close(host: State<'_, EngineHost>) -> Result<(), String> {
     host.close().map_err(|error| error.to_string())
 }
 
+/// Load a song document (the `@stems/schema` song) as the current song.
 #[tauri::command]
-async fn engine_load_song(host: State<'_, EngineHost>, paths: Vec<PathBuf>) -> Result<SongInfo, String> {
-    host.load_song(paths).map_err(|error| error.to_string())
+async fn engine_load_song(host: State<'_, EngineHost>, song: SongDoc) -> Result<SongInfo, String> {
+    host.load_song(song).map_err(|error| error.to_string())
+}
+
+/// Preload the next setlist song and how to reach it.
+#[tauri::command]
+async fn engine_prepare_next(host: State<'_, EngineHost>, song: SongDoc, transition: TransitionDoc) -> Result<SongInfo, String> {
+    host.prepare_next(song, transition).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn engine_clear_next(host: State<'_, EngineHost>) -> Result<(), String> {
+    host.clear_next().map_err(|error| error.to_string())
+}
+
+/// Click and guide settings.
+#[tauri::command]
+async fn engine_set_options(host: State<'_, EngineHost>, options: PerformOptions) -> Result<(), String> {
+    host.set_options(options).map_err(|error| error.to_string())
+}
+
+/// Crossfade to a pad file, or fade the pad out with `null`.
+#[tauri::command]
+async fn engine_set_pad(host: State<'_, EngineHost>, file: Option<PathBuf>) -> Result<(), String> {
+    host.set_pad(file).map_err(|error| error.to_string())
 }
 
 /// A transport command, now or at `at` (a frame of the engine clock).
@@ -121,6 +146,10 @@ pub fn run() {
             engine_open,
             engine_close,
             engine_load_song,
+            engine_prepare_next,
+            engine_clear_next,
+            engine_set_options,
+            engine_set_pad,
             engine_command,
             library_plan_import,
             library_import,
