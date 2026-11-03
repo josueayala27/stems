@@ -2,11 +2,15 @@
 // Play, pause, stop and seek for the loaded song. Shown at the bottom of the shell once a song is loaded.
 import { css } from 'styled-system/css'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { IconButton, Slider } from '~/ui'
 import { formatFrames } from './engine'
 import { usePlayer } from './player'
 
 const player = usePlayer()
+// The Play workspace has its own transport.
+const route = useRoute()
+const onPlayPage = computed(() => route.path === '/')
 
 // While dragging, the thumb follows the pointer and the seek is sent on release.
 const scrubbing = ref(false)
@@ -25,7 +29,7 @@ function endScrub() {
 }
 
 function onKey(event: KeyboardEvent) {
-  if (event.code !== 'Space' || event.repeat || !player.song.value) return
+  if (event.code !== 'Space' || event.repeat || !player.song.value || onPlayPage.value) return
   const target = event.target as HTMLElement | null
   if (target?.closest('input, textarea, select, button, [contenteditable="true"], [role="slider"]')) return
   event.preventDefault()
@@ -62,7 +66,7 @@ const errorText = css({ textStyle: 'ui.xs', color: 'danger.default', flexShrink:
 </script>
 
 <template>
-  <div v-if="player.song.value || player.error.value" :class="bar" role="region" aria-label="Transport">
+  <div v-if="!onPlayPage && (player.song.value || player.error.value)" :class="bar" role="region" aria-label="Transport">
     <IconButton
       :icon="player.playing.value ? 'lucide:pause' : 'lucide:play'"
       :label="player.playing.value ? 'Pause' : 'Play'"

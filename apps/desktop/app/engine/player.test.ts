@@ -1,37 +1,37 @@
 import { describe, expect, it } from 'vitest'
 import { songFromImport } from '~/data/importSong'
-import { trackCommands } from './player'
+import { engineSections, sectionIndexAt, skipTarget, type Span } from './player'
 
-const song = songFromImport({
-  title: 'Song',
-  sampleRate: 48_000,
-  durationSamples: 48_000,
-  tempo: null,
-  tracks: ['Click', 'Bass', 'Keys'].map((name, i) => ({
-    name,
-    file: `/m/${i}.wav`,
-    hash: `${i}`,
-    kind: 'stem' as const,
-    color: 'blue',
-    sampleRate: 48_000,
-    channels: 2,
-    frames: 48_000,
-  })),
-})
+const sections: Span[] = [
+  { name: 'Intro', start: 0, end: 100 },
+  { name: 'Verse', start: 100, end: 200 },
+  { name: 'Chorus', start: 200, end: 300 },
+  { name: 'Outro', start: 300, end: 400 },
+]
 
-describe('trackCommands', () => {
-  it('sends nothing for tracks at unity and unmuted', () => {
-    expect(trackCommands(song)).toEqual([])
+describe('sections', () => {
+  it('finds the section under the play head', () => {
+    expect(sectionIndexAt(sections, 0)).toBe(0)
+    expect(sectionIndexAt(sections, 199)).toBe(1)
+    expect(sectionIndexAt(sections, 400)).toBe(-1)
   })
 
-  it('restores saved gain and mute by track index', () => {
-    const edited = {
-      ...song,
-      tracks: song.tracks.map((track, i) => (i === 0 ? { ...track, mute: true } : i === 2 ? { ...track, gain: 0.5 } : track)),
+  it('skips the next section', () => {
+    expect(skipTarget(sections, 50)?.name).toBe('Chorus')
+    expect(skipTarget(sections, 250)).toBeNull()
+  })
+
+  it('converts sections to engine frames, sorted', () => {
+    const song = {
+      ...songFromImport({ title: 'S', sampleRate: 44_100, durationSamples: 441_000, tempo: null, tracks: [] }),
+      sections: [
+        { id: 'b', name: 'Chorus', startSample: 44_100, endSample: 88_200, color: 'red', loopable: true },
+        { id: 'a', name: 'Verse', startSample: 0, endSample: 44_100, color: 'blue', loopable: true },
+      ],
     }
-    expect(trackCommands(edited)).toEqual([
-      { type: 'mute', track: 0, muted: true },
-      { type: 'gain', track: 2, gain: 0.5 },
+    expect(engineSections(song, 48_000)).toEqual([
+      { name: 'Verse', start: 0, end: 48_000 },
+      { name: 'Chorus', start: 48_000, end: 96_000 },
     ])
   })
 })

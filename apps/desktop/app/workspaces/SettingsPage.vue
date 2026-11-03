@@ -1,7 +1,11 @@
 <script setup lang="ts">
 import { css } from 'styled-system/css'
 import { ref } from 'vue'
-import { Badge, PropertyRow, Select, Switch, type SelectOption } from '~/ui'
+import { Badge, Button, PropertyRow, Select, Slider, Switch, type SelectOption } from '~/ui'
+import { pickPaths } from '~/data/library'
+import type { ClickSound } from '~/engine/engine'
+import { usePerformOptions } from '~/engine/options'
+import { fileName } from './songs/format'
 import PageHeader from '~/shell/PageHeader.vue'
 import LibraryLayout from './LibraryLayout.vue'
 
@@ -9,6 +13,23 @@ const sampleRate = ref(48_000)
 const bufferSize = ref(128)
 const sampleRates: SelectOption<number>[] = [44_100, 48_000, 96_000].map((value) => ({ value, label: `${value / 1000} kHz` }))
 const bufferSizes: SelectOption<number>[] = [64, 128, 256, 512].map((value) => ({ value, label: `${value} samples` }))
+const options = usePerformOptions()
+const sounds: SelectOption<ClickSound>[] = [
+  { value: 'beep', label: 'Beep' },
+  { value: 'tick', label: 'Tick' },
+  { value: 'wood', label: 'Wood block' },
+]
+const subdivisions: SelectOption<number>[] = [
+  { value: 1, label: 'Beats' },
+  { value: 2, label: 'Eighths' },
+  { value: 3, label: 'Triplets' },
+  { value: 4, label: 'Sixteenths' },
+]
+const countIns: SelectOption<number>[] = [0, 1, 2, 4].map((value) => ({ value, label: value === 0 ? 'Off' : `${value} ${value === 1 ? 'bar' : 'bars'}` }))
+async function chooseVoices() {
+  const [folder] = await pickPaths('folder')
+  if (folder) options.guide.voices = folder
+}
 const link = ref(false)
 const ltc = ref(false)
 const mtc = ref(false)
@@ -32,6 +53,38 @@ const hint = css({ textStyle: 'ui.sm', color: 'fg.muted' })
         <PropertyRow label="Device"><Select :options="[]" placeholder="No devices found" disabled aria-label="Audio device" /></PropertyRow>
         <PropertyRow label="Sample rate"><Select v-model="sampleRate" :options="sampleRates" disabled aria-label="Sample rate" /></PropertyRow>
         <PropertyRow label="Buffer"><Select v-model="bufferSize" :options="bufferSizes" disabled aria-label="Buffer size" /></PropertyRow>
+      </section>
+      <section :class="card" aria-labelledby="settings-click">
+        <div :class="cardHeader">
+          <h2 id="settings-click" :class="cardTitle">Click</h2>
+          <Switch v-model="options.click.enabled" aria-label="Click on" />
+        </div>
+        <PropertyRow label="Sound"><Select v-model="options.click.sound" :options="sounds" aria-label="Click sound" /></PropertyRow>
+        <PropertyRow label="Subdivision"><Select v-model="options.click.subdivisions" :options="subdivisions" aria-label="Click subdivision" /></PropertyRow>
+        <PropertyRow label="Count-in"><Select v-model="options.click.countInBars" :options="countIns" aria-label="Count-in" /></PropertyRow>
+        <PropertyRow label="Level">
+          <Slider :model-value="Math.round(options.click.gain * 100)" :min="0" :max="100" aria-label="Click level" @update:model-value="(value: number) => (options.click.gain = value / 100)" />
+        </PropertyRow>
+        <p :class="hint">Generated from each song's tempo map, with an accent on the downbeat. Solo never silences it.</p>
+      </section>
+      <section :class="card" aria-labelledby="settings-guide">
+        <div :class="cardHeader">
+          <h2 id="settings-guide" :class="cardTitle">Guide</h2>
+          <Switch v-model="options.guide.enabled" aria-label="Guide on" />
+        </div>
+        <PropertyRow label="Voices">
+          <Button size="sm" icon="lucide:folder-open" :title="options.guide.voices ?? undefined" @click="chooseVoices">
+            {{ options.guide.voices ? fileName(options.guide.voices) : 'Choose folder…' }}
+          </Button>
+        </PropertyRow>
+        <PropertyRow label="Count 2, 3, 4"><Switch v-model="options.guide.count" aria-label="Count beats after the section name" /></PropertyRow>
+        <PropertyRow label="Level">
+          <Slider :model-value="Math.round(options.guide.gain * 100)" :min="0" :max="100" aria-label="Guide level" @update:model-value="(value: number) => (options.guide.gain = value / 100)" />
+        </PropertyRow>
+        <p :class="hint">
+          A folder of WAV files named after sections (verse.wav, chorus.wav, bridge.wav…) and counts (2.wav, 3.wav, 4.wav). The guide speaks the
+          section name on the bar before it. Stems ships no voices: record your own or use ones you may redistribute.
+        </p>
       </section>
       <section :class="card" aria-labelledby="settings-rig">
         <div :class="cardHeader"><h2 id="settings-rig" :class="cardTitle">Rig</h2></div>

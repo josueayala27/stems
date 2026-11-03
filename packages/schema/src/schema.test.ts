@@ -87,7 +87,7 @@ describe('sectionSchema', () => {
 describe('setlistSchema', () => {
   it('defaults item transitions', () => {
     const parsed = setlistSchema.parse({ id: 'l', name: 'Friday', items: [{ songId: 'song-1' }] })
-    expect(parsed.items[0]).toEqual({ songId: 'song-1', transition: 'stop', preWaitMs: 0, padId: null })
+    expect(parsed.items[0]).toEqual({ songId: 'song-1', transition: 'stop', preWaitMs: 0, crossfadeMs: 4000, pad: null })
   })
 })
 

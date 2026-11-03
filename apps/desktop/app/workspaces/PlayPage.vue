@@ -1,77 +1,177 @@
 <script setup lang="ts">
+// Play workspace (docs/architecture/04-ui.md): setlist rail, section strip, track lanes and the
+// transport. Large hit targets for stage use; every action has a key. The engine is the clock.
+import type { Setlist, Song } from '@stems/schema'
+import { createTempoGrid, formatBarBeat, samplesToBarBeat } from '@stems/core'
 import { css } from 'styled-system/css'
 import { Icon, NuxtLink } from '#components'
-import { ref } from 'vue'
-import { Button, EmptyState, IconButton, Panel, SegmentedControl, Slider, type SegmentOption } from '~/ui'
-import type { QuantizeTarget } from '@stems/core'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
+import { Badge, Button, EmptyState, IconButton, Panel, SegmentedControl, Select, Slider, type SegmentOption, type SelectOption } from '~/ui'
+import { getSetlist, listSetlists, type SetlistSummary } from '~/data/setlists'
+import { getSong } from '~/data/songs'
+import { formatFrames, type Quantize } from '~/engine/engine'
+import { usePerformOptions } from '~/engine/options'
+import { usePlayer, useSmoothPosition } from '~/engine/player'
+import { fromEngine } from '~/engine/songDoc'
+import SectionStrip from './play/SectionStrip.vue'
+import TrackLanes from './play/TrackLanes.vue'
 
-// Layout from docs/architecture/04-ui.md: setlist rail, section strip, track lanes, transport bar.
-// Nothing plays yet, so every region shows its empty state and the transport is disabled.
+const route = useRoute()
+const player = usePlayer()
+const options = usePerformOptions()
+const smooth = useSmoothPosition()
+const setlists = ref<SetlistSummary[]>([])
+const chosen = ref<string | undefined>(undefined)
+const missing = ref<string[]>([])
 
-const quantize = ref<QuantizeTarget>('bar')
-const quantizeOptions: SegmentOption<QuantizeTarget>[] = [
+const quantizeOptions: SegmentOption<Quantize>[] = [
   { value: 'beat', label: 'Beat' },
   { value: 'bar', label: 'Bar' },
   { value: 'section', label: 'Section' },
 ]
-const clickLevel = ref(80)
-const guideLevel = ref(80)
-const placeholderSections = ['Intro', 'Verse', 'Chorus', 'Verse', 'Chorus', 'Bridge', 'Outro']
+const setlistOptions = computed<SelectOption[]>(() => setlists.value.map((entry) => ({ value: entry.id, label: entry.name })))
 
-const root = css({
-  display: 'grid',
-  gridTemplateColumns: '[240px 1fr]',
-  gridTemplateRows: '[1fr auto]',
-  h: 'full',
-  minH: '0',
+async function openSetlist(id: string | undefined) {
+  if (!id) return
+  const list = await getSetlist(id)
+  if (!list) return
+  const found = await Promise.all(list.items.map((item) => getSong(item.songId).catch(() => null)))
+  missing.value = list.items.filter((_, at) => !found[at]).map((item) => item.songId)
+  // Songs that no longer exist are left out, with their setlist items.
+  const items = list.items.filter((_, at) => found[at])
+  const songs = found.filter((song): song is Song => song !== null)
+  const playable: Setlist = { ...list, items }
+  if (songs.length) await player.loadSetlist(playable, songs, 0)
+}
+
+onMounted(async () => {
+  setlists.value = await listSetlists().catch(() => [])
+  const requested = typeof route.query.setlist === 'string' ? route.query.setlist : undefined
+  chosen.value = requested ?? player.setlist.value?.id
+  if (requested && requested !== player.setlist.value?.id) await openSetlist(requested)
 })
+
+watch(chosen, (id, previous) => {
+  if (id && id !== previous && id !== player.setlist.value?.id) void openSetlist(id)
+})
+
+/** bar.beat of the play head, from the song's tempo map. */
+const barBeat = computed(() => {
+  const song = player.song.value
+  if (!song || !player.sampleRate.value) return '—'
+  const grid = createTempoGrid({ sampleRate: song.sampleRate, bpm: song.bpm, timeSignature: song.timeSignature, tempoMap: song.tempoMap })
+  return formatBarBeat(samplesToBarBeat(grid, fromEngine(smooth.value, song.sampleRate, player.sampleRate.value)))
+})
+
+const status = computed(() => {
+  const state = player.state.value
+  if (!state) return null
+  const rate = state.sampleRate || 1
+  if (state.countIn > 0) return { tone: 'info' as const, label: `Count-in ${Math.ceil(state.countIn / rate)}` }
+  if (state.waiting > 0) return { tone: 'info' as const, label: `Next song in ${Math.ceil(state.waiting / rate)} s` }
+  if (state.crossfading) return { tone: 'info' as const, label: 'Crossfading' }
+  if (state.armed !== 'none') {
+    const what = { jump: 'Jump', vamp: 'Vamp', stop: 'Stop', endSong: 'End song', none: '' }[state.armed]
+    const bars = player.song.value ? ` in ${formatFrames(Math.max(0, state.armedAt - state.position), rate)}` : ''
+    return { tone: 'warning' as const, label: `${what}${bars}` }
+  }
+  if (state.vamping) return { tone: 'warning' as const, label: 'Vamping' }
+  return null
+})
+
+const clickLevel = computed({ get: () => Math.round(options.click.gain * 100), set: (value: number) => (options.click.gain = value / 100) })
+const guideLevel = computed({ get: () => Math.round(options.guide.gain * 100), set: (value: number) => (options.guide.gain = value / 100) })
+
+// Keyboard: Space play/pause, 1–9 jump, V hold to vamp, L loop toggle, S stop at section end,
+// K skip next section, N next song, Esc cancel, P lock.
+let vampKey = false
+function isTyping(target: EventTarget | null): boolean {
+  return target instanceof HTMLElement && !!target.closest('input, textarea, select, [contenteditable="true"]')
+}
+function onKeyDown(event: KeyboardEvent) {
+  if (isTyping(event.target) || event.metaKey || event.ctrlKey || event.altKey) return
+  const digit = /^Digit([1-9])$/.exec(event.code)
+  if (digit) {
+    event.preventDefault()
+    void player.jumpToSection(Number(digit[1]) - 1)
+    return
+  }
+  if (event.repeat) return
+  const actions: Record<string, () => unknown> = {
+    Space: () => player.toggle(),
+    KeyV: () => {
+      vampKey = true
+      return player.vamp()
+    },
+    KeyL: () => player.toggleVamp(),
+    KeyS: () => player.stopAtSectionEnd(),
+    KeyK: () => player.skipNextSection(),
+    KeyN: () => player.nextSongNow(),
+    Escape: () => player.cancelArmed(),
+    KeyP: () => (player.locked.value = !player.locked.value),
+  }
+  const action = actions[event.code]
+  if (action && !(event.code === 'Space' && event.target instanceof HTMLButtonElement)) {
+    event.preventDefault()
+    void action()
+  }
+}
+function onKeyUp(event: KeyboardEvent) {
+  if (event.code === 'KeyV' && vampKey) {
+    vampKey = false
+    void player.releaseVamp()
+  }
+}
+onMounted(() => {
+  window.addEventListener('keydown', onKeyDown)
+  window.addEventListener('keyup', onKeyUp)
+})
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onKeyDown)
+  window.removeEventListener('keyup', onKeyUp)
+})
+
+function itemState(at: number): 'current' | 'next' | 'played' | null {
+  if (at === player.index.value) return 'current'
+  if (at === player.nextIndex.value) return 'next'
+  return at < player.index.value ? 'played' : null
+}
+
+const root = css({ display: 'grid', gridTemplateColumns: '[260px 1fr]', gridTemplateRows: '[1fr auto]', h: 'full', minH: '0' })
 const rail = css({ gridRow: '1', gridColumn: '1', minH: '0' })
-const stage = css({ gridRow: '1', gridColumn: '2', display: 'flex', flexDirection: 'column', minW: '0', minH: '0', bg: 'bg.canvas' })
-const strip = css({
-  display: 'flex',
-  gap: '1.5',
-  p: '3',
-  flexShrink: '0',
-  borderBottomWidth: '1px',
-  borderColor: 'border.default',
-  overflowX: 'auto',
-})
-const sectionChip = css({
+const railBody = css({ display: 'flex', flexDirection: 'column', gap: '2', p: '3', minH: '0', overflowY: 'auto' })
+const railItem = css({
   display: 'grid',
-  placeItems: 'center',
-  minW: '[96px]',
-  h: '[56px]',
-  px: '3',
+  gridTemplateColumns: '[24px 1fr auto]',
+  alignItems: 'center',
+  gap: '2',
+  minH: '[48px]',
+  px: '2',
   borderRadius: 'md',
-  borderWidth: '1px',
-  borderStyle: 'dashed',
-  borderColor: 'border.strong',
-  color: 'fg.subtle',
-  textStyle: 'ui.md',
+  textAlign: 'left',
+  textStyle: 'ui.sm',
+  color: 'fg.default',
+  _hover: { bg: 'bg.hover' },
+  _disabled: { cursor: 'not-allowed' },
+  '&[data-state=current]': { bg: 'bg.hover', color: 'accent.default' },
+  '&[data-state=played]': { color: 'fg.subtle' },
 })
-const lanes = css({ flex: '1', minH: '0', display: 'flex', flexDirection: 'column' })
-const laneHeader = css({
-  display: 'grid',
-  gridTemplateColumns: '[200px 1fr]',
-  h: 'control.lg',
-  flexShrink: '0',
-  borderBottomWidth: '1px',
-  borderColor: 'border.default',
-  textStyle: 'ui.label',
-  color: 'fg.subtle',
-  textTransform: 'uppercase',
-})
-const laneHeaderCell = css({ display: 'flex', alignItems: 'center', px: '3' })
-const laneHeaderRuler = css({ borderLeftWidth: '1px', borderColor: 'border.default' })
-const lanesBody = css({ flex: '1', minH: '0', display: 'grid', placeItems: 'center' })
+const railNumber = css({ color: 'fg.subtle', fontVariantNumeric: 'tabular-nums', textAlign: 'right' })
+const railTitle = css({ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' })
+const warning = css({ textStyle: 'ui.xs', color: 'warning.default' })
+const stage = css({ gridRow: '1', gridColumn: '2', display: 'flex', flexDirection: 'column', minW: '0', minH: '0', bg: 'bg.canvas' })
+const center = css({ flex: '1', display: 'grid', placeItems: 'center' })
 const transport = css({
   gridRow: '2',
   gridColumn: '1 / -1',
   display: 'flex',
   alignItems: 'center',
-  gap: '4',
-  h: '[72px]',
+  gap: '3',
+  minH: '[80px]',
   px: '4',
+  py: '2',
+  flexWrap: 'wrap',
   bg: 'bg.panel',
   borderTopWidth: '1px',
   borderColor: 'border.default',
@@ -79,66 +179,125 @@ const transport = css({
 const group = css({ display: 'flex', alignItems: 'center', gap: '2' })
 const groupLabel = css({ textStyle: 'ui.label', color: 'fg.subtle', textTransform: 'uppercase' })
 const spacer = css({ flex: '1' })
-const level = css({ display: 'flex', alignItems: 'center', gap: '2', w: '[160px]' })
+const level = css({ display: 'flex', alignItems: 'center', gap: '2', w: '[150px]' })
+const readout = css({ display: 'flex', flexDirection: 'column', minW: '[96px]' })
+const readoutBig = css({ fontFamily: 'mono', textStyle: 'ui.title', color: 'fg.default', fontVariantNumeric: 'tabular-nums' })
+const readoutSmall = css({ fontFamily: 'mono', textStyle: 'ui.xs', color: 'fg.subtle', fontVariantNumeric: 'tabular-nums' })
 const playButton = css({
   display: 'grid',
   placeItems: 'center',
-  w: '[48px]',
-  h: '[48px]',
+  w: '[56px]',
+  h: '[56px]',
   borderRadius: 'full',
   background: '[token(gradients.sheen), token(colors.accent.default)]',
   color: 'accent.fg',
   _disabled: { opacity: '0.4', cursor: 'not-allowed' },
+  _focusVisible: { outlineWidth: '2px', outlineStyle: 'solid', outlineColor: 'accent.default', outlineOffset: '[2px]' },
 })
+const errorText = css({ textStyle: 'ui.xs', color: 'danger.default', maxW: '[320px]', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' })
 </script>
 
 <template>
   <div :class="root">
     <div :class="rail">
       <Panel title="Setlist" bordered="right">
-        <EmptyState icon="lucide:list-music" title="No setlist loaded" description="Build a setlist from your songs, then load it here to play." size="sm">
-          <template #actions>
-            <NuxtLink to="/setlists"><Button size="sm" tabindex="-1">Open setlists</Button></NuxtLink>
-          </template>
-        </EmptyState>
+        <div :class="railBody">
+          <Select v-model="chosen" :options="setlistOptions" placeholder="Choose a setlist" :disabled="player.locked.value || !setlists.length" aria-label="Setlist" />
+          <EmptyState v-if="!setlists.length" icon="lucide:list-music" title="No setlists" description="Build a setlist from your songs, then play it here." size="sm">
+            <template #actions>
+              <NuxtLink to="/setlists"><Button size="sm" tabindex="-1">Open setlists</Button></NuxtLink>
+            </template>
+          </EmptyState>
+          <span v-if="missing.length" :class="warning">{{ missing.length }} songs in this setlist are no longer in the library.</span>
+          <button
+            v-for="(song, at) in player.songs.value"
+            :key="`${song.id}-${at}`"
+            type="button"
+            :class="railItem"
+            :data-state="itemState(at)"
+            :disabled="player.locked.value || player.loading.value"
+            @click="player.goTo(at)"
+          >
+            <span :class="railNumber">{{ at + 1 }}</span>
+            <span :class="railTitle">{{ song.title }}</span>
+            <Badge v-if="itemState(at) === 'current'" size="sm" tone="success" label="Now" />
+            <Badge v-else-if="itemState(at) === 'next'" size="sm" tone="info" label="Next" />
+          </button>
+        </div>
       </Panel>
     </div>
 
     <section :class="stage" aria-label="Song">
-      <div :class="strip" role="list" aria-label="Sections">
-        <span v-for="(name, index) in placeholderSections" :key="index" :class="sectionChip" role="listitem" aria-disabled="true">{{ name }}</span>
-      </div>
-      <div :class="lanes">
-        <div :class="laneHeader">
-          <span :class="laneHeaderCell">Tracks</span>
-          <span :class="[laneHeaderCell, laneHeaderRuler]">Timeline</span>
-        </div>
-        <div :class="lanesBody">
-          <EmptyState icon="lucide:audio-waveform" title="No song loaded" description="Track lanes with waveforms, mute and solo appear here when a song is loaded." />
-        </div>
+      <SectionStrip />
+      <TrackLanes v-if="player.song.value" />
+      <div v-else :class="center">
+        <EmptyState icon="lucide:audio-waveform" title="No song loaded" description="Choose a setlist, or play a song from Songs." />
       </div>
     </section>
 
     <footer :class="transport" aria-label="Transport">
-      <button type="button" :class="playButton" disabled aria-label="Play">
-        <Icon name="lucide:play" :size="22" aria-hidden="true" />
+      <button
+        type="button"
+        :class="playButton"
+        :disabled="!player.song.value"
+        :aria-label="player.playing.value ? 'Pause (Space)' : 'Play (Space)'"
+        @click="player.toggle()"
+      >
+        <Icon :name="player.playing.value ? 'lucide:pause' : 'lucide:play'" :size="24" aria-hidden="true" />
       </button>
-      <IconButton icon="lucide:square" label="Stop" size="lg" disabled />
-      <IconButton icon="lucide:repeat" label="Loop section" size="lg" disabled />
-      <IconButton icon="lucide:skip-forward" label="Next song" size="lg" disabled />
+      <IconButton icon="lucide:square" label="Stop and return to start" size="lg" :disabled="!player.song.value" @click="player.stop()" />
+      <IconButton
+        icon="lucide:repeat"
+        label="Vamp this section (L, or hold V)"
+        size="lg"
+        :active="player.state.value?.vamping ?? false"
+        :disabled="!player.song.value"
+        @click="player.toggleVamp()"
+      />
+      <IconButton icon="lucide:circle-stop" label="Stop at end of section (S)" size="lg" :disabled="!player.playing.value" @click="player.stopAtSectionEnd()" />
+      <IconButton icon="lucide:chevrons-right" label="Skip next section (K)" size="lg" :disabled="!player.playing.value" @click="player.skipNextSection()" />
+      <IconButton icon="lucide:skip-forward" label="Next song (N)" size="lg" :disabled="player.nextIndex.value === null" @click="player.nextSongNow()" />
+
+      <div :class="readout">
+        <span :class="readoutBig">{{ barBeat }}</span>
+        <span :class="readoutSmall">{{ formatFrames(smooth, player.sampleRate.value) }} / {{ formatFrames(player.length.value, player.sampleRate.value) }}</span>
+      </div>
+      <Badge v-if="status" :tone="status.tone" dot :label="status.label" />
+      <IconButton v-if="player.state.value?.armed !== 'none' && player.state.value" icon="lucide:x" label="Cancel (Esc)" size="sm" @click="player.cancelArmed()" />
+      <span v-if="player.error.value" :class="errorText" role="alert" :title="player.error.value">{{ player.error.value }}</span>
+
+      <span :class="spacer" />
       <div :class="group">
         <span :class="groupLabel">Quantize</span>
-        <SegmentedControl v-model="quantize" :options="quantizeOptions" :fill="false" aria-label="Quantize" />
-      </div>
-      <span :class="spacer" />
-      <div :class="level">
-        <span :class="groupLabel">Click</span>
-        <Slider v-model="clickLevel" aria-label="Click level" disabled />
+        <SegmentedControl v-model="player.quantize.value" :options="quantizeOptions" :fill="false" aria-label="Quantize" />
       </div>
       <div :class="level">
-        <span :class="groupLabel">Guide</span>
-        <Slider v-model="guideLevel" aria-label="Guide level" disabled />
+        <IconButton
+          :icon="options.click.enabled ? 'lucide:metronome' : 'lucide:volume-x'"
+          label="Click on or off"
+          size="sm"
+          :active="options.click.enabled"
+          @click="options.click.enabled = !options.click.enabled"
+        />
+        <Slider v-model="clickLevel" :min="0" :max="100" aria-label="Click level" />
       </div>
+      <div :class="level">
+        <IconButton
+          :icon="options.guide.enabled ? 'lucide:message-square' : 'lucide:volume-x'"
+          label="Guide on or off"
+          size="sm"
+          :active="options.guide.enabled"
+          @click="options.guide.enabled = !options.guide.enabled"
+        />
+        <Slider v-model="guideLevel" :min="0" :max="100" aria-label="Guide level" />
+      </div>
+      <IconButton
+        :icon="player.locked.value ? 'lucide:lock' : 'lucide:lock-open'"
+        :label="player.locked.value ? 'Unlock editing (P)' : 'Lock for performance (P)'"
+        size="lg"
+        :active="player.locked.value"
+        @click="player.locked.value = !player.locked.value"
+      />
     </footer>
   </div>
 </template>

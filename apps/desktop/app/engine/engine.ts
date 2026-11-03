@@ -39,18 +39,58 @@ export interface TrackInfo {
 }
 
 export interface SongInfo {
+  /** Identifies the song in engine state (`songTag`, `nextTag`). */
+  tag: number
   sampleRate: number
   length: number
   tracks: TrackInfo[]
+  /** Engine track indexes of the generated click and guide, after the audio tracks. */
+  clickTrack: number
+  guideTrack: number
 }
+
+export type Quantize = 'now' | 'beat' | 'bar' | 'section' | 'end'
+
+export type LiveAction = { type: 'jump'; to: number } | { type: 'vamp' } | { type: 'stop' } | { type: 'endSong' }
 
 export type Transport =
   | { type: 'play' }
+  | { type: 'playWithCountIn' }
   | { type: 'stop' }
   | { type: 'seek'; position: number }
   | { type: 'gain'; track: number; gain: number }
   | { type: 'mute'; track: number; muted: boolean }
   | { type: 'solo'; track: number; soloed: boolean }
+  /** `to` and engine positions are frames at the device rate. */
+  | { type: 'arm'; action: LiveAction; quantize: Quantize }
+  | { type: 'cancelArmed' }
+  | { type: 'releaseVamp' }
+  | { type: 'advance'; play: boolean }
+  | { type: 'padGain'; gain: number }
+
+/** The song document as the engine reads it (a subset of `@stems/schema` Song). */
+export interface SongDoc {
+  sampleRate: number
+  bpm: number
+  timeSignature: { numerator: number; denominator: number }
+  tempoMap: { sample: number; bpm: number; timeSignature: { numerator: number; denominator: number } }[]
+  tracks: { file: string; kind: 'stem' | 'click' | 'guide'; gain: number; mute: boolean }[]
+  sections: { name: string; startSample: number; endSample: number }[]
+  markers: { sample: number; action: 'none' | 'stop' | 'loop' | 'next' }[]
+}
+
+export interface TransitionDoc {
+  kind: 'stop' | 'auto' | 'crossfade'
+  preWaitMs: number
+  crossfadeMs: number
+}
+
+export type ClickSound = 'beep' | 'tick' | 'wood'
+
+export interface PerformOptions {
+  click: { enabled: boolean; sound: ClickSound; subdivisions: number; countInBars: number; gain: number }
+  guide: { enabled: boolean; voices: string | null; gain: number; count: boolean }
+}
 
 /** The `engine://state` payload, about 60 times a second. */
 export interface EngineState {
@@ -62,6 +102,21 @@ export interface EngineState {
   length: number
   loaded: boolean
   playing: boolean
+  songTag: number
+  nextTag: number
+  armed: 'none' | 'jump' | 'vamp' | 'stop' | 'endSong'
+  /** Song frame where the armed action lands. */
+  armedAt: number
+  armedTo: number
+  vamping: boolean
+  vampStart: number
+  vampEnd: number
+  /** Count-in frames left. */
+  countIn: number
+  /** Pre-wait frames left before an auto-advance. */
+  waiting: number
+  crossfading: boolean
+  pad: boolean
   xruns: number
   underruns: number
   /** Callback time over buffer time. */
@@ -83,7 +138,11 @@ export const engine = {
   devices: () => call<DeviceInfo[]>('engine_devices'),
   open: (config: OutputConfig) => call<OpenedOutput>('engine_open', { config }),
   close: () => call<void>('engine_close'),
-  loadSong: (paths: string[]) => call<SongInfo>('engine_load_song', { paths }),
+  loadSong: (song: SongDoc) => call<SongInfo>('engine_load_song', { song }),
+  prepareNext: (song: SongDoc, transition: TransitionDoc) => call<SongInfo>('engine_prepare_next', { song, transition }),
+  clearNext: () => call<void>('engine_clear_next'),
+  setOptions: (options: PerformOptions) => call<void>('engine_set_options', { options }),
+  setPad: (file: string | null) => call<void>('engine_set_pad', { file }),
   /** Run a transport command now, or at `at` (a frame of the engine clock). */
   command: (command: Transport, at?: number) => call<void>('engine_command', { command, at: at ?? null }),
 }

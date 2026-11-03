@@ -1,0 +1,40 @@
+import type { Setlist, SetlistItem, Song } from '@stems/schema'
+import type { SongDoc, TransitionDoc } from './engine'
+
+/** The part of a song the engine needs to play it. */
+export function songDoc(song: Song): SongDoc {
+  return {
+    sampleRate: song.sampleRate,
+    bpm: song.bpm,
+    timeSignature: song.timeSignature,
+    tempoMap: song.tempoMap,
+    tracks: song.tracks.map((track) => ({ file: track.file, kind: track.kind, gain: track.gain, mute: track.mute })),
+    sections: [...song.sections]
+      .sort((a, b) => a.startSample - b.startSample)
+      .map((section) => ({ name: section.name, startSample: section.startSample, endSample: section.endSample })),
+    markers: song.markers.map((marker) => ({ sample: marker.sample, action: marker.action })),
+  }
+}
+
+/** How the song at `item` is reached from the one before it. */
+export function transitionDoc(item: SetlistItem): TransitionDoc {
+  return { kind: item.transition, preWaitMs: item.preWaitMs, crossfadeMs: item.crossfadeMs }
+}
+
+/** The pad that should sound at setlist position `index`: the nearest one set at or before it. */
+export function padAt(setlist: Setlist, index: number): string | null {
+  for (let i = Math.min(index, setlist.items.length - 1); i >= 0; i--) {
+    const pad = setlist.items[i]?.pad
+    if (pad) return pad.file
+  }
+  return null
+}
+
+/** Song sample (at the song's rate) to engine frame (at the device rate), and back. */
+export function toEngine(sample: number, songRate: number, engineRate: number): number {
+  return songRate > 0 && engineRate > 0 ? Math.round((sample * engineRate) / songRate) : sample
+}
+
+export function fromEngine(frame: number, songRate: number, engineRate: number): number {
+  return songRate > 0 && engineRate > 0 ? Math.round((frame * songRate) / engineRate) : frame
+}
