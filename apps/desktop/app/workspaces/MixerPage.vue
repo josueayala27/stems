@@ -114,22 +114,26 @@ const db = css({ textStyle: 'ui.sm', color: 'fg.muted', fontVariantNumeric: 'tab
 const warningList = css({ display: 'flex', flexDirection: 'column', gap: '1', p: '3', borderRadius: 'md', borderWidth: '1px', borderColor: 'danger.default', bg: 'danger.muted' })
 const warningText = css({ textStyle: 'ui.sm', color: 'fg.default' })
 const matrixScroll = css({ overflowX: 'auto', borderRadius: 'lg', borderWidth: '1px', borderColor: 'border.default', bg: 'bg.panel' })
-const matrix = css({ borderCollapse: 'collapse', textStyle: 'ui.sm', '& th, & td': { px: '1', py: '1', textAlign: 'center' } })
-const busHeader = css({ textAlign: 'left!', px: '3!', color: 'fg.default', fontWeight: 'medium', whiteSpace: 'nowrap' })
-const channelHeader = css({ color: 'fg.muted', fontVariantNumeric: 'tabular-nums', minW: '[28px]' })
-const targetsCell = css({ textAlign: 'left!', px: '3!', color: 'fg.muted', whiteSpace: 'nowrap' })
+const matrix = css({ borderCollapse: 'collapse', textStyle: 'ui.sm' })
+const busHeader = css({ textAlign: 'left', px: '3', py: '1', color: 'fg.default', fontWeight: 'medium', whiteSpace: 'nowrap' })
+const channelHeader = css({ textAlign: 'center', px: '1', py: '1', color: 'fg.muted', fontVariantNumeric: 'tabular-nums', minW: '[28px]' })
+const cell = css({ textAlign: 'center', px: '1', py: '1' })
+const targetsCell = css({ textAlign: 'left', px: '3', py: '1', color: 'fg.muted', whiteSpace: 'nowrap' })
 const busStrip = css({ display: 'flex', flexDirection: 'column', gap: '2', py: '3', '&:not(:last-child)': { borderBottomWidth: '1px', borderColor: 'border.default' } })
 const busTop = css({ display: 'flex', alignItems: 'center', gap: '2', textStyle: 'ui.sm', color: 'fg.default' })
 const busName = css({ flex: '1', minW: '0', fontWeight: 'medium' })
 const busFader = css({ display: 'grid', gridTemplateColumns: '[1fr 64px]', alignItems: 'center', gap: '2' })
-const center = css({ display: 'grid', placeItems: 'center', h: 'full', p: '6' })
+const center = css({ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '3', h: 'full', p: '6' })
 </script>
 
 <template>
   <div v-if="!rig" :class="center">
     <EmptyState icon="lucide:audio-lines" title="No audio device open" description="Open the audio device to load your rig: its buses, faders and routing.">
-      <Button variant="primary" icon="lucide:power" @click="player.refreshDevices()">Open audio device</Button>
+      <template #actions>
+        <Button variant="primary" icon="lucide:power" @click="player.refreshDevices()">Open audio device</Button>
+      </template>
     </EmptyState>
+    <p v-if="player.error.value" :class="hint">{{ player.error.value }}</p>
   </div>
   <div v-else :class="root">
     <section :class="main" aria-label="Tracks and routing">
@@ -198,7 +202,7 @@ const center = css({ display: 'grid', placeItems: 'center', h: 'full', p: '6' })
           <tbody>
             <tr v-for="bus in rig.buses" :key="bus.id">
               <th :class="busHeader" scope="row">{{ bus.name }}</th>
-              <td v-for="channel in channels" :key="channel">
+              <td v-for="channel in channels" :key="channel" :class="cell">
                 <Checkbox :model-value="routed(bus.name, channel)" :aria-label="`${bus.name} to output ${channel + 1}`" @update:model-value="toggleRoute(bus.name, channel)" />
               </td>
               <td :class="targetsCell">{{ formatTargets(channelTargets(channelsOf(rig, bus.name), deviceChannels)) }}</td>
