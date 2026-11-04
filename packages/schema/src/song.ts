@@ -98,6 +98,11 @@ export const songSchema = z
     timeSignature: timeSignatureSchema,
     durationSamples: sampleSchema,
     sampleRate: sampleRateSchema,
+    /**
+     * Start point: file sample where bar 1 begins. Audio before it is skipped; every other position
+     * in the song (tempo map, sections, markers, cue events) counts from it.
+     */
+    startSample: sampleSchema.default(0),
     tempoMap: z.array(tempoPointSchema).default([]),
     tracks: z.array(trackSchema).default([]),
     sections: z.array(sectionSchema).default([]),

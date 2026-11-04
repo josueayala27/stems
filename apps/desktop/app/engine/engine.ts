@@ -88,6 +88,8 @@ export interface SongDoc {
   timecodeStart: string | null
   /** MIDI cue events at song samples (marker anchors resolved). */
   events: { sample: number; action: MidiAction }[]
+  /** File sample where bar 1 begins; audio before it is skipped. */
+  startSample: number
 }
 
 /** The MIDI actions of `@stems/schema` cue events, as the engine reads them. Channels are 1–16. */

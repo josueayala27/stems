@@ -97,3 +97,24 @@ export function waveformColumns(peaks: Peaks, start: number, end: number, width:
   }
   return columns
 }
+
+/**
+ * The first sample where any of `tracks` rises above `threshold` (linear, default about -40 dBFS),
+ * read from the finest peak level, or 0 when all are silent. Used to skip leading silence.
+ */
+export function firstSound(tracks: readonly (Peaks | null)[], threshold = 0.01): number {
+  let first = Number.POSITIVE_INFINITY
+  for (const peaks of tracks) {
+    const level = peaks?.levels[0]
+    if (!level) continue
+    const limit = Math.round(threshold * 32767)
+    const count = level.data.length / 2
+    for (let index = 0; index < count; index++) {
+      if (Math.max(-level.data[index * 2]!, level.data[index * 2 + 1]!) > limit) {
+        first = Math.min(first, index * level.framesPerPeak)
+        break
+      }
+    }
+  }
+  return Number.isFinite(first) ? first : 0
+}

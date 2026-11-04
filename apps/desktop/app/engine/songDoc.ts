@@ -39,6 +39,7 @@ export function songDoc(song: Song, rig: Rig | null = null, timecodeStart: strin
     markers: song.markers.map((marker) => ({ sample: marker.sample, action: marker.action })),
     timecodeStart,
     events: cueEventDocs(song),
+    startSample: song.startSample,
   }
 }
 

@@ -7,6 +7,11 @@ export const SECTION_COLORS = ['blue', 'green', 'amber', 'red', 'violet', 'orang
 /** Bars a new section spans. */
 export const DEFAULT_BARS = 8
 
+/** Samples from the start point to the end of the longest stem: the song as it plays. */
+export function songLength(song: Song): number {
+  return Math.max(0, song.durationSamples - song.startSample)
+}
+
 export function gridFor(song: Song): TempoGrid {
   return createTempoGrid({ sampleRate: song.sampleRate, bpm: song.bpm, timeSignature: song.timeSignature, tempoMap: song.tempoMap })
 }
@@ -32,7 +37,7 @@ export function snapToBar(grid: TempoGrid, sample: number): number {
 /** Bars in the song, rounding a partial last bar up. */
 export function barCount(song: Song): number {
   const grid = gridFor(song)
-  const last = samplesToBarBeat(grid, Math.max(0, song.durationSamples - 1))
+  const last = samplesToBarBeat(grid, Math.max(0, songLength(song) - 1))
   return last.bar
 }
 
@@ -53,9 +58,9 @@ export function appendSection(song: Song, newId: () => string): Section[] {
   const grid = gridFor(song)
   const sections = sortSections(song.sections)
   const start = sections.at(-1)?.endSample ?? 0
-  if (start >= song.durationSamples) return sections
+  if (start >= songLength(song)) return sections
   const startBar = barAt(grid, start)
-  const end = Math.min(song.durationSamples, barStart(grid, startBar + DEFAULT_BARS))
+  const end = Math.min(songLength(song), barStart(grid, startBar + DEFAULT_BARS))
   const color = SECTION_COLORS[sections.length % SECTION_COLORS.length]!
   return [...sections, { id: newId(), name: nextSectionName(sections), startSample: start, endSample: end, color, loopable: true }]
 }
@@ -79,7 +84,7 @@ export function setSectionBars(song: Song, id: string, startBar: number, endBar:
     song.sections.map((section) => {
       if (section.id !== id) return section
       const start = barStart(grid, startBar)
-      const end = Math.min(song.durationSamples, Math.max(barStart(grid, Math.max(endBar, startBar + 1)), start + 1))
+      const end = Math.min(songLength(song), Math.max(barStart(grid, Math.max(endBar, startBar + 1)), start + 1))
       return { ...section, startSample: Math.min(start, end - 1), endSample: end }
     }),
   )
@@ -87,7 +92,7 @@ export function setSectionBars(song: Song, id: string, startBar: number, endBar:
 
 /** A marker at `sample`, snapped to the bar. */
 export function addMarker(song: Song, sample: number, newId: () => string): Marker[] {
-  const at = Math.min(snapToBar(gridFor(song), sample), Math.max(0, song.durationSamples - 1))
+  const at = Math.min(snapToBar(gridFor(song), sample), Math.max(0, songLength(song) - 1))
   return [...song.markers, { id: newId(), name: `Marker ${song.markers.length + 1}`, sample: at, action: 'stop' as const }].sort((a, b) => a.sample - b.sample)
 }
 
@@ -102,12 +107,12 @@ export function setTempo(song: Song, bpm: number, numerator: number, denominator
   // Keep sections and markers on the same bar numbers.
   const move = (sample: number) => {
     const position = samplesToBarBeat(before, sample)
-    return Math.min(song.durationSamples, barBeatToSamples(after, position))
+    return Math.min(songLength(song), barBeatToSamples(after, position))
   }
   return {
     ...next,
     sections: next.sections.map((section) => ({ ...section, startSample: move(section.startSample), endSample: Math.max(move(section.endSample), move(section.startSample) + 1) })),
-    markers: next.markers.map((marker) => ({ ...marker, sample: Math.min(move(marker.sample), Math.max(0, song.durationSamples - 1)) })),
+    markers: next.markers.map((marker) => ({ ...marker, sample: Math.min(move(marker.sample), Math.max(0, songLength(song) - 1)) })),
   }
 }
 
@@ -143,7 +148,7 @@ export function moveSectionEdge(song: Song, id: string, edge: 'start' | 'end', s
   } else {
     const next = sorted[index + 1]
     const joined = next && next.startSample === section.endSample
-    const high = next ? (joined ? next.endSample - min : next.startSample) : song.durationSamples
+    const high = next ? (joined ? next.endSample - min : next.startSample) : songLength(song)
     const end = clamp(target, section.startSample + min, high)
     updated.set(section.id, { ...section, endSample: end })
     if (next && joined) updated.set(next.id, { ...next, startSample: end })
@@ -154,6 +159,30 @@ export function moveSectionEdge(song: Song, id: string, edge: 'start' | 'end', s
 /** Drag a marker to `sample`, snapped to the nearest bar unless `snap` is false. */
 export function moveMarker(song: Song, id: string, sample: number, snap = true): Marker[] {
   const at = snap ? snapToBar(gridFor(song), sample) : Math.round(sample)
-  const clamped = Math.min(Math.max(0, at), Math.max(0, song.durationSamples - 1))
+  const clamped = Math.min(Math.max(0, at), Math.max(0, songLength(song) - 1))
   return song.markers.map((marker) => (marker.id === id ? { ...marker, sample: clamped } : marker))
+}
+
+/**
+ * Move the start point to file sample `start`. Everything placed on the timeline keeps its place in
+ * the audio: positions shift by the difference, and sections, markers and cues that would fall
+ * before the new start are clamped to it (sections) or dropped (markers, and cues on them).
+ */
+export function setStart(song: Song, start: number): Song {
+  const next = Math.min(Math.max(0, Math.round(start)), song.durationSamples)
+  const delta = song.startSample - next
+  const length = Math.max(0, song.durationSamples - next)
+  const move = (sample: number) => sample + delta
+  const sections = song.sections
+    .map((section) => ({ ...section, startSample: Math.max(0, move(section.startSample)), endSample: Math.min(length, move(section.endSample)) }))
+    .filter((section) => section.endSample > section.startSample)
+  const markers = song.markers.map((marker) => ({ ...marker, sample: move(marker.sample) })).filter((marker) => marker.sample >= 0 && marker.sample < Math.max(1, length))
+  const kept = new Set(markers.map((marker) => marker.id))
+  const events = song.events
+    .map((event) => (event.at.kind === 'sample' ? { ...event, at: { kind: 'sample' as const, sample: Math.max(0, move(event.at.sample)) } } : event))
+    .filter((event) => event.at.kind === 'sample' || kept.has(event.at.markerId))
+  // The tempo map keeps its first point at the new bar 1; later points keep their place in the audio.
+  const tempoMap = song.tempoMap.map((point, index) => ({ ...point, sample: index === 0 ? 0 : Math.max(1, move(point.sample)) }))
+  const sortedTempo = tempoMap.filter((point, index) => index === 0 || point.sample > (tempoMap[index - 1]?.sample ?? 0))
+  return { ...song, startSample: next, sections, markers, events, tempoMap: sortedTempo }
 }

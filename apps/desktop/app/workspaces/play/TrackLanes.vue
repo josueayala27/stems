@@ -14,13 +14,15 @@ import SectionLane, { type LaneSection } from '~/timeline/SectionLane.vue'
 import Timeline from '~/timeline/Timeline.vue'
 import TimelineRow from '~/timeline/TimelineRow.vue'
 import { useTimelineRange } from '~/timeline/range'
-import { gridFor } from '../arrange/arrangement'
+import { gridFor, songLength } from '../arrange/arrangement'
 
 const HEADER = 200
 const player = usePlayer()
 const song = computed(() => player.song.value)
 const grid = computed(() => (song.value ? gridFor(song.value) : null))
-const length = computed(() => song.value?.durationSamples ?? 0)
+const length = computed(() => (song.value ? songLength(song.value) : 0))
+/** Waveforms are drawn in file samples: the view plus the start point. */
+const offset = computed(() => song.value?.startSample ?? 0)
 const timeline = ref<InstanceType<typeof Timeline> | null>(null)
 const range = useTimelineRange(timeline)
 
@@ -118,7 +120,7 @@ const label = css({ textStyle: 'ui.label', color: 'fg.subtle', textTransform: 'u
         >S</button>
       </template>
       <div :class="lane" @click="seekFromLane">
-        <Waveform :peaks="peaks[track.id] ?? null" :color="track.color" :height="56" :start="range.start" :end="range.end" :aria-label="`${track.name} waveform`" />
+        <Waveform :peaks="peaks[track.id] ?? null" :color="track.color" :height="56" :start="range.start + offset" :end="range.end === undefined ? undefined : range.end + offset" :aria-label="`${track.name} waveform`" />
       </div>
     </TimelineRow>
   </Timeline>

@@ -10,7 +10,7 @@ import Waveform from '~/audio/Waveform.vue'
 import { library } from '~/data/library'
 import { getSong, saveSong } from '~/data/songs'
 import { usePlayer } from '~/engine/player'
-import { addMarker, appendSection, barAt, barCount, barStart, gridFor, moveMarker, moveSectionEdge, SECTION_COLORS, setSectionBars, setTempo, snapToBar, splitAt } from './arrange/arrangement'
+import { addMarker, appendSection, barAt, barCount, barStart, gridFor, moveMarker, moveSectionEdge, SECTION_COLORS, setSectionBars, setStart, setTempo, snapToBar, songLength, splitAt } from './arrange/arrangement'
 import { onPlayhead } from '~/engine/player'
 import { fromEngine } from '~/engine/songDoc'
 import MarkerLane, { type LaneMarker } from '~/timeline/MarkerLane.vue'
@@ -231,7 +231,7 @@ const statusText = css({ textStyle: 'ui.sm', color: 'fg.muted' })
       <section :class="timeline" aria-label="Arrangement">
         <Timeline
           ref="arrangeTimeline"
-          :length="song.durationSamples"
+          :length="songLength(song)"
           :grid="grid"
           :blocks="laneSections"
           :header-width="HEADER"
@@ -243,7 +243,7 @@ const statusText = css({ textStyle: 'ui.sm', color: 'fg.muted' })
           <TimelineRow :height="96" :header-width="HEADER" label="Waveform">
             <template #header><span :class="laneLabel">Audio</span></template>
             <div :class="laneFill" @click="placeOnWave">
-              <Waveform :peaks="overview" :color="overviewColor" :height="96" :start="range.start" :end="range.end" aria-label="Song waveform" />
+              <Waveform :peaks="overview" :color="overviewColor" :height="96" :start="range.start + song.startSample" :end="range.end === undefined ? undefined : range.end + song.startSample" aria-label="Song waveform" />
             </div>
           </TimelineRow>
           <TimelineRow :height="44" :header-width="HEADER" label="Sections lane">
@@ -315,7 +315,7 @@ const statusText = css({ textStyle: 'ui.sm', color: 'fg.muted' })
                 :decimals="0"
                 label="Bar"
                 size="sm"
-                @update:model-value="(value: string) => grid && updateMarker(marker.id, { sample: Math.min(barStart(grid, Number(value)), Math.max(0, song!.durationSamples - 1)) })"
+                @update:model-value="(value: string) => grid && updateMarker(marker.id, { sample: Math.min(barStart(grid, Number(value)), Math.max(0, songLength(song!) - 1)) })"
               />
               <Select :model-value="marker.action" :options="actionOptions" size="sm" aria-label="Action" @update:model-value="(action?: Marker['action']) => action && updateMarker(marker.id, { action })" />
             </div>
