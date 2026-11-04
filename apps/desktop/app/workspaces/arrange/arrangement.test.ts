@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { songSchema } from '@stems/schema'
 import { songFromImport } from '~/data/importSong'
-import { addMarker, appendSection, barCount, gridFor, moveMarker, moveSectionEdge, nextSectionName, setSectionBars, setTempo, snapToBar, splitAt } from './arrangement'
+import { addMarker, appendSection, barCount, gridFor, moveMarker, moveSectionEdge, nextSectionName, setSectionBars, setStart, setTempo, snapToBar, songLength, splitAt } from './arrangement'
 
 // 120 bpm 4/4 at 48 kHz: one bar is 96 000 samples. 40 bars long.
 const BAR = 96_000
@@ -103,5 +103,39 @@ describe('dragging on the timeline', () => {
     expect(moveMarker(song, 'm', 7.6 * BAR)[0]!.sample).toBe(8 * BAR)
     expect(moveMarker(song, 'm', 7.6 * BAR, false)[0]!.sample).toBe(7.6 * BAR)
     expect(moveMarker(song, 'm', 1e12)[0]!.sample).toBe(40 * BAR - 1)
+  })
+})
+
+describe('start point', () => {
+  const song = {
+    ...base,
+    durationSamples: 40 * BAR,
+    sections: [
+      { id: 'a', name: 'Intro', startSample: 0, endSample: 4 * BAR, color: 'blue', loopable: true },
+      { id: 'b', name: 'Verse', startSample: 4 * BAR, endSample: 12 * BAR, color: 'red', loopable: true },
+    ],
+    markers: [
+      { id: 'early', name: 'Early', sample: 1_000, action: 'none' as const },
+      { id: 'm', name: 'Stop', sample: 10 * BAR, action: 'stop' as const },
+    ],
+    events: [
+      { id: 'e', at: { kind: 'marker' as const, markerId: 'early' }, action: { kind: 'midiProgram' as const, port: '', channel: 1, program: 1 } },
+      { id: 'f', at: { kind: 'sample' as const, sample: 0 }, action: { kind: 'midiProgram' as const, port: '', channel: 1, program: 2 } },
+    ],
+  }
+
+  it('keeps everything on the same audio when the start moves', () => {
+    const moved = setStart(song, BAR / 2)
+    expect(moved.startSample).toBe(BAR / 2)
+    expect(songLength(moved)).toBe(40 * BAR - BAR / 2)
+    expect(moved.sections.map((s) => [s.startSample, s.endSample])).toEqual([
+      [0, 3.5 * BAR],
+      [3.5 * BAR, 11.5 * BAR],
+    ])
+    expect(moved.markers.map((m) => m.id)).toEqual(['m'])
+    expect(moved.markers[0]!.sample).toBe(9.5 * BAR)
+    expect(moved.events.map((e) => e.id)).toEqual(['f'])
+    expect(songSchema.safeParse(moved).success).toBe(true)
+    expect(setStart(moved, 0).sections[1]).toMatchObject({ startSample: 4 * BAR, endSample: 12 * BAR })
   })
 })

@@ -5,6 +5,7 @@ Zod schemas live in `packages/schema`. Pure logic (arrangement, quantize, setlis
 ```
 Song {
   id, title, artist, bpm, key, timeSignature, durationSamples, sampleRate
+  startSample                  bar 1 in the files; earlier audio is skipped, all positions count from it
   tempoMap: { sample, bpm, timeSignature }[]
   tracks: Track[]
   sections: Section[]          intro, verse, chorus, bridge, outro, custom name

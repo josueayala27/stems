@@ -9,6 +9,7 @@ import type { Peaks } from '~/audio/peaks'
 import Waveform from '~/audio/Waveform.vue'
 import { library } from '~/data/library'
 import { getSong, saveSong } from '~/data/songs'
+import { detectStart } from '~/data/startPoint'
 import { usePlayer } from '~/engine/player'
 import { addMarker, appendSection, barAt, barCount, barStart, gridFor, moveMarker, moveSectionEdge, SECTION_COLORS, setSectionBars, setStart, setTempo, snapToBar, songLength, splitAt } from './arrange/arrangement'
 import { onPlayhead } from '~/engine/player'
@@ -74,6 +75,27 @@ const playingHere = computed(() => !!song.value && player.song.value?.id === son
 onPlayhead((frames) => {
   if (playingHere.value && song.value && arrangeTimeline.value) arrangeTimeline.value.setPlayhead(fromEngine(frames, song.value.sampleRate, player.sampleRate.value))
 })
+
+// ── Start point ─────────────────────────────────────────────────────────────────────────────
+
+const detecting = ref(false)
+const startSeconds = computed(() => (song.value && song.value.sampleRate > 0 ? song.value.startSample / song.value.sampleRate : 0))
+async function skipSilence() {
+  if (!song.value) return
+  detecting.value = true
+  try {
+    const start = await detectStart(song.value)
+    edit((current) => setStart(current, start))
+    message.value = start > 0 ? `Starts on the first sound, ${(start / song.value!.sampleRate).toFixed(2)} s in. Save to keep it.` : 'No silence at the start.'
+  } finally {
+    detecting.value = false
+  }
+}
+/** Make the cursor bar 1: for a pickup or a count before the downbeat. */
+function startAtCursor() {
+  edit((current) => setStart(current, current.startSample + cursor.value))
+  cursor.value = 0
+}
 
 function setCursor(sample: number) {
   if (grid.value) cursor.value = snapToBar(grid.value, sample)
@@ -221,6 +243,12 @@ const statusText = css({ textStyle: 'ui.sm', color: 'fg.muted' })
           aria-label="Beat unit"
           @update:model-value="(value?: number) => value && changeTempo(song!.bpm, song!.timeSignature.numerator, value)"
         />
+      </div>
+      <div v-if="song" :class="tempo">
+        <Badge :label="startSeconds > 0 ? `Starts ${startSeconds.toFixed(2)} s in` : 'Starts at 0'" />
+        <Button size="sm" icon="lucide:scissors-line-dashed" :loading="detecting" @click="skipSilence">Skip silence</Button>
+        <IconButton icon="lucide:flag" label="Make the cursor bar 1" size="sm" :disabled="cursor === 0" @click="startAtCursor" />
+        <IconButton v-if="song.startSample > 0" icon="lucide:undo-2" label="Start at the top of the file" size="sm" @click="edit((current) => setStart(current, 0))" />
       </div>
       <span :class="statusText" role="status">{{ message }}</span>
       <Button v-if="song" icon="lucide:play" @click="player.play(song)">Play</Button>

@@ -6,6 +6,7 @@ import { Badge, Button, Dialog, Input, SegmentedControl, Spinner, type SegmentOp
 import { songFromImport } from '~/data/importSong'
 import { library, onPathsDropped, pickPaths, type ImportMode, type ImportPlan } from '~/data/library'
 import { saveSong } from '~/data/songs'
+import { skipLeadingSilence } from '~/data/startPoint'
 import { fileName, formatDuration, formatRate } from './format'
 
 const open = defineModel<boolean>('open', { default: false })
@@ -47,7 +48,8 @@ async function runImport() {
   error.value = null
   try {
     const { song: imported } = await library.importSong(paths.value, mode.value)
-    const song = songFromImport({ ...imported, title: title.value.trim() || imported.title })
+    // Start on the first sound: stems often carry silence before the downbeat.
+    const song = await skipLeadingSilence(songFromImport({ ...imported, title: title.value.trim() || imported.title }))
     await saveSong(song)
     emit('imported', song)
     open.value = false

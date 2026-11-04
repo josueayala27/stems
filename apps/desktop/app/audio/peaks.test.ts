@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parsePeaks, pickLevel, waveformColumns, type Peaks } from './peaks'
+import { firstSound, parsePeaks, pickLevel, waveformColumns, type Peaks } from './peaks'
 
 /** Build a peak file the way `stems-library` writes it. */
 function encode(sampleRate: number, frames: number, levels: { framesPerPeak: number; peaks: [number, number][] }[]): ArrayBuffer {
@@ -82,5 +82,13 @@ describe('waveformColumns', () => {
   it('is silent past the end of the track', () => {
     const columns = waveformColumns(sample(), 2_048, 4_096, 3)
     expect([...columns]).toEqual([0, 0, 0, 0, 0, 0])
+  })
+})
+
+describe('firstSound', () => {
+  const peaks = (values: number[]) => ({ sampleRate: 48_000, frames: values.length * 256, levels: [{ framesPerPeak: 256, data: new Int16Array(values.flatMap((v) => [-v, v])) }] })
+  it('finds the earliest peak above the threshold across tracks', () => {
+    expect(firstSound([peaks([0, 10, 0, 20_000]), peaks([0, 0, 5_000, 0]), null])).toBe(512)
+    expect(firstSound([peaks([0, 0])])).toBe(0)
   })
 })
