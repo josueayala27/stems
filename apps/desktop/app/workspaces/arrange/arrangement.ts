@@ -110,3 +110,50 @@ export function setTempo(song: Song, bpm: number, numerator: number, denominator
     markers: next.markers.map((marker) => ({ ...marker, sample: Math.min(move(marker.sample), Math.max(0, song.durationSamples - 1)) })),
   }
 }
+
+/** Shortest section when dragging: a bar when snapping, a tenth of a second when free. */
+function minimumLength(grid: TempoGrid, sample: number, snap: boolean): number {
+  if (!snap) return Math.round(grid.sampleRate / 10)
+  const bar = barAt(grid, sample)
+  return barStart(grid, bar + 1) - barStart(grid, bar)
+}
+
+/**
+ * Drag one edge of a section to `sample`, snapped to the nearest bar unless `snap` is false. A
+ * neighbour that shares the edge moves with it, so contiguous sections stay contiguous; nothing
+ * overlaps and no section gets shorter than the minimum.
+ */
+export function moveSectionEdge(song: Song, id: string, edge: 'start' | 'end', sample: number, snap = true): Section[] {
+  const grid = gridFor(song)
+  const sorted = sortSections(song.sections)
+  const index = sorted.findIndex((section) => section.id === id)
+  const section = sorted[index]
+  if (!section) return song.sections
+  const target = snap ? snapToBar(grid, sample) : Math.round(sample)
+  const min = minimumLength(grid, target, snap)
+  const clamp = (value: number, low: number, high: number) => Math.min(Math.max(value, low), Math.max(low, high))
+  const updated = new Map<string, Section>()
+  if (edge === 'start') {
+    const previous = sorted[index - 1]
+    const joined = previous && previous.endSample === section.startSample
+    const low = previous ? (joined ? previous.startSample + min : previous.endSample) : 0
+    const start = clamp(target, low, section.endSample - min)
+    updated.set(section.id, { ...section, startSample: start })
+    if (previous && joined) updated.set(previous.id, { ...previous, endSample: start })
+  } else {
+    const next = sorted[index + 1]
+    const joined = next && next.startSample === section.endSample
+    const high = next ? (joined ? next.endSample - min : next.startSample) : song.durationSamples
+    const end = clamp(target, section.startSample + min, high)
+    updated.set(section.id, { ...section, endSample: end })
+    if (next && joined) updated.set(next.id, { ...next, startSample: end })
+  }
+  return song.sections.map((entry) => updated.get(entry.id) ?? entry)
+}
+
+/** Drag a marker to `sample`, snapped to the nearest bar unless `snap` is false. */
+export function moveMarker(song: Song, id: string, sample: number, snap = true): Marker[] {
+  const at = snap ? snapToBar(gridFor(song), sample) : Math.round(sample)
+  const clamped = Math.min(Math.max(0, at), Math.max(0, song.durationSamples - 1))
+  return song.markers.map((marker) => (marker.id === id ? { ...marker, sample: clamped } : marker))
+}

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { songSchema } from '@stems/schema'
 import { songFromImport } from '~/data/importSong'
-import { addMarker, appendSection, barCount, gridFor, nextSectionName, setSectionBars, setTempo, snapToBar, splitAt } from './arrangement'
+import { addMarker, appendSection, barCount, gridFor, moveMarker, moveSectionEdge, nextSectionName, setSectionBars, setTempo, snapToBar, splitAt } from './arrangement'
 
 // 120 bpm 4/4 at 48 kHz: one bar is 96 000 samples. 40 bars long.
 const BAR = 96_000
@@ -68,5 +68,40 @@ describe('arrangement', () => {
     // 8 bars at 60 bpm is 32 s = 1 536 000 samples.
     expect(slower.sections[0]).toMatchObject({ startSample: 0, endSample: 1_536_000 })
     expect(setTempo(song, 0, 4, 4)).toBe(song)
+  })
+})
+
+describe('dragging on the timeline', () => {
+  const song = {
+    ...base,
+    sections: [
+      { id: 'a', name: 'Intro', startSample: 0, endSample: 4 * BAR, color: 'blue', loopable: true },
+      { id: 'b', name: 'Verse', startSample: 4 * BAR, endSample: 12 * BAR, color: 'red', loopable: true },
+      { id: 'c', name: 'Chorus', startSample: 16 * BAR, endSample: 20 * BAR, color: 'amber', loopable: true },
+    ],
+    markers: [{ id: 'm', name: 'Stop', sample: 10 * BAR, action: 'stop' as const }],
+  }
+  const span = (sections: typeof song.sections, id: string) => {
+    const section = sections.find((entry) => entry.id === id)!
+    return [section.startSample / BAR, section.endSample / BAR]
+  }
+
+  it('snaps an edge to the nearest bar and moves a joined neighbour with it', () => {
+    const moved = moveSectionEdge(song, 'b', 'start', 5.4 * BAR)
+    expect(span(moved, 'b')).toEqual([5, 12])
+    expect(span(moved, 'a')).toEqual([0, 5])
+  })
+
+  it('stops at a gap neighbour and keeps one bar minimum', () => {
+    expect(span(moveSectionEdge(song, 'b', 'end', 30 * BAR), 'b')).toEqual([4, 16])
+    expect(span(moveSectionEdge(song, 'b', 'end', 2 * BAR), 'b')).toEqual([4, 5])
+    expect(span(moveSectionEdge(song, 'c', 'end', 99 * BAR), 'c')).toEqual([16, 40])
+  })
+
+  it('places edges and markers freely when not snapping', () => {
+    expect(moveSectionEdge(song, 'c', 'start', 15.5 * BAR, false).find((s) => s.id === 'c')!.startSample).toBe(15.5 * BAR)
+    expect(moveMarker(song, 'm', 7.6 * BAR)[0]!.sample).toBe(8 * BAR)
+    expect(moveMarker(song, 'm', 7.6 * BAR, false)[0]!.sample).toBe(7.6 * BAR)
+    expect(moveMarker(song, 'm', 1e12)[0]!.sample).toBe(40 * BAR - 1)
   })
 })

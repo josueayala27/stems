@@ -10,7 +10,14 @@ import Waveform from '~/audio/Waveform.vue'
 import { library } from '~/data/library'
 import { getSong, saveSong } from '~/data/songs'
 import { usePlayer } from '~/engine/player'
-import { addMarker, appendSection, barAt, barCount, barStart, gridFor, SECTION_COLORS, setSectionBars, setTempo, snapToBar, splitAt } from './arrange/arrangement'
+import { addMarker, appendSection, barAt, barCount, barStart, gridFor, moveMarker, moveSectionEdge, SECTION_COLORS, setSectionBars, setTempo, snapToBar, splitAt } from './arrange/arrangement'
+import { onPlayhead } from '~/engine/player'
+import { fromEngine } from '~/engine/songDoc'
+import MarkerLane, { type LaneMarker } from '~/timeline/MarkerLane.vue'
+import SectionLane, { type LaneSection } from '~/timeline/SectionLane.vue'
+import Timeline from '~/timeline/Timeline.vue'
+import TimelineRow from '~/timeline/TimelineRow.vue'
+import { useTimelineRange } from '~/timeline/range'
 import { anchorFromKey, anchorKey, anchorOptions, cueSample, isMidiCue, MIDI_KINDS, newCue, noteName, removeMarker, updateCue, withKind, type MidiKind } from './arrange/cues'
 
 const props = defineProps<{ songId: string }>()
@@ -50,24 +57,41 @@ function edit(change: (current: Song) => Song) {
   message.value = null
 }
 
-function percent(sample: number): number {
-  return song.value && song.value.durationSamples > 0 ? (sample / song.value.durationSamples) * 100 : 0
-}
 
-/** Bar numbers to label on the ruler, about every 40 px of a 1000 px timeline. */
-const rulerBars = computed(() => {
-  if (!grid.value || !bars.value) return []
-  const step = Math.max(1, Math.ceil(bars.value / 25))
-  const list: { bar: number; left: number }[] = []
-  for (let bar = 1; bar <= bars.value; bar += step) list.push({ bar, left: percent(barStart(grid.value, bar)) })
-  return list
+// ── Timeline ────────────────────────────────────────────────────────────────────────────────
+
+const HEADER = 120
+const arrangeTimeline = ref<InstanceType<typeof Timeline> | null>(null)
+const range = useTimelineRange(arrangeTimeline)
+const laneSections = computed<LaneSection[]>(() =>
+  [...(song.value?.sections ?? [])]
+    .sort((a, b) => a.startSample - b.startSample)
+    .map((section) => ({ id: section.id, name: section.name, start: section.startSample, end: section.endSample, color: section.color })),
+)
+const laneMarkers = computed<LaneMarker[]>(() => song.value?.markers.map((marker) => ({ id: marker.id, name: marker.name, sample: marker.sample })) ?? [])
+/** This song is the one loaded in the player: show its play head. */
+const playingHere = computed(() => !!song.value && player.song.value?.id === song.value.id)
+onPlayhead((frames) => {
+  if (playingHere.value && song.value && arrangeTimeline.value) arrangeTimeline.value.setPlayhead(fromEngine(frames, song.value.sampleRate, player.sampleRate.value))
 })
 
-function place(event: MouseEvent) {
-  if (!song.value || !grid.value) return
+function setCursor(sample: number) {
+  if (grid.value) cursor.value = snapToBar(grid.value, sample)
+}
+function placeOnWave(event: MouseEvent) {
   const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
-  const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width))
-  cursor.value = snapToBar(grid.value, ratio * song.value.durationSamples)
+  const context = arrangeTimeline.value?.timeline
+  if (context) setCursor(context.sampleAt(event.clientX - rect.left))
+}
+function resizeSection(id: string, edge: 'start' | 'end', sample: number, free: boolean) {
+  edit((current) => ({ ...current, sections: moveSectionEdge(current, id, edge, sample, !free) }))
+}
+function dragMarker(id: string, sample: number, free: boolean) {
+  edit((current) => ({ ...current, markers: moveMarker(current, id, sample, !free) }))
+}
+function pickSection(index: number) {
+  const section = laneSections.value[index]
+  if (section) cursor.value = section.start
 }
 
 function updateSection(id: string, patch: Partial<Section>) {
@@ -154,29 +178,10 @@ const titleClass = css({ textStyle: 'ui.title', color: 'fg.default' })
 const spacer = css({ flex: '1' })
 const tempo = css({ display: 'flex', alignItems: 'center', gap: '2', w: '[300px]' })
 const body = css({ flex: '1', minH: '0', display: 'grid', gridTemplateColumns: '[1fr 340px]' })
-const timeline = css({ display: 'flex', flexDirection: 'column', minW: '0', minH: '0', p: '4', gap: '2', bg: 'bg.canvas', overflowY: 'auto' })
-const track = css({ position: 'relative', w: 'full', cursor: 'crosshair' })
-const ruler = css({ position: 'relative', h: '[20px]', textStyle: 'ui.xs', color: 'fg.subtle', fontFamily: 'mono' })
-const rulerMark = css({ position: 'absolute', top: '0', borderLeftWidth: '1px', borderColor: 'border.default', pl: '1', h: 'full' })
-const wave = css({ borderRadius: 'md', bg: 'bg.input', overflow: 'hidden' })
-const lane = css({ position: 'relative', h: '[44px]', borderRadius: 'md', bg: 'bg.panel', borderWidth: '1px', borderColor: 'border.default' })
-const sectionBlock = css({
-  position: 'absolute',
-  top: '1',
-  bottom: '1',
-  display: 'flex',
-  alignItems: 'center',
-  px: '2',
-  borderRadius: 'sm',
-  textStyle: 'ui.xs',
-  color: 'fg.default',
-  overflow: 'hidden',
-  whiteSpace: 'nowrap',
-})
-const markerPin = css({ position: 'absolute', top: '0', bottom: '0', w: '[2px]', bg: 'warning.default' })
-const markerLabel = css({ position: 'absolute', top: '1', left: '1', textStyle: 'ui.xs', color: 'warning.default', whiteSpace: 'nowrap' })
-const cursorLine = css({ position: 'absolute', top: '0', bottom: '0', w: '[2px]', bg: 'accent.default', pointerEvents: 'none' })
-const actions = css({ display: 'flex', alignItems: 'center', gap: '2', flexWrap: 'wrap' })
+const timeline = css({ display: 'flex', flexDirection: 'column', minW: '0', minH: '0', bg: 'bg.canvas' })
+const laneLabel = css({ textStyle: 'ui.label', color: 'fg.subtle', textTransform: 'uppercase' })
+const laneFill = css({ position: 'absolute', inset: '0', cursor: 'text' })
+const actions = css({ display: 'flex', alignItems: 'center', gap: '2', flexWrap: 'wrap', px: '4', py: '2', borderTopWidth: '1px', borderColor: 'border.default', bg: 'bg.panel' })
 const hint = css({ textStyle: 'ui.sm', color: 'fg.muted' })
 const editor = css({ display: 'flex', flexDirection: 'column', gap: '2', py: '2', borderBottomWidth: '1px', borderColor: 'border.default', _last: { borderBottomWidth: '0' } })
 const editorRow = css({ display: 'flex', alignItems: 'center', gap: '2' })
@@ -224,35 +229,34 @@ const statusText = css({ textStyle: 'ui.sm', color: 'fg.muted' })
 
     <div v-if="song" :class="body">
       <section :class="timeline" aria-label="Arrangement">
-        <div :class="[track, ruler]" @click="place">
-          <span v-for="mark in rulerBars" :key="mark.bar" :class="rulerMark" :style="{ left: `${mark.left}%` }">{{ mark.bar }}</span>
-        </div>
-        <div :class="[track, wave]" @click="place">
-          <Waveform :peaks="overview" :color="overviewColor" :height="96" aria-label="Song waveform" />
-          <span :class="cursorLine" :style="{ left: `${percent(cursor)}%` }" />
-        </div>
-        <div :class="[track, lane]" aria-label="Sections lane" @click="place">
-          <span
-            v-for="section in song.sections"
-            :key="section.id"
-            :class="sectionBlock"
-            :style="{
-              left: `${percent(section.startSample)}%`,
-              width: `${percent(section.endSample - section.startSample)}%`,
-              background: `var(--colors-track-${section.color})`,
-            }"
-            :title="section.name"
-          >{{ section.name }}</span>
-          <span :class="cursorLine" :style="{ left: `${percent(cursor)}%` }" />
-        </div>
-        <div :class="[track, lane]" aria-label="Markers lane" @click="place">
-          <span v-for="marker in song.markers" :key="marker.id" :class="markerPin" :style="{ left: `${percent(marker.sample)}%` }">
-            <span :class="markerLabel">{{ marker.name }}</span>
-          </span>
-          <span :class="cursorLine" :style="{ left: `${percent(cursor)}%` }" />
-        </div>
+        <Timeline
+          ref="arrangeTimeline"
+          :length="song.durationSamples"
+          :grid="grid"
+          :blocks="laneSections"
+          :header-width="HEADER"
+          :cursor="cursor"
+          :playhead="playingHere"
+          @seek="setCursor"
+        >
+          <template #rulerHeader>Bar {{ cursorBar }}</template>
+          <TimelineRow :height="96" :header-width="HEADER" label="Waveform">
+            <template #header><span :class="laneLabel">Audio</span></template>
+            <div :class="laneFill" @click="placeOnWave">
+              <Waveform :peaks="overview" :color="overviewColor" :height="96" :start="range.start" :end="range.end" aria-label="Song waveform" />
+            </div>
+          </TimelineRow>
+          <TimelineRow :height="44" :header-width="HEADER" label="Sections lane">
+            <template #header><span :class="laneLabel">Sections</span></template>
+            <SectionLane :sections="laneSections" editable @resize="resizeSection" @pick="pickSection" @background="setCursor" />
+          </TimelineRow>
+          <TimelineRow :height="36" :header-width="HEADER" label="Markers lane">
+            <template #header><span :class="laneLabel">Markers</span></template>
+            <MarkerLane :markers="laneMarkers" editable @move="dragMarker" @background="setCursor" />
+          </TimelineRow>
+        </Timeline>
         <div :class="actions">
-          <span :class="hint">Cursor at bar {{ cursorBar }} of {{ bars }}. Click the timeline to move it.</span>
+          <span :class="hint">Bar {{ cursorBar }} of {{ bars }}. Drag section edges and markers (they snap to bars; hold ⌥ to place freely). Pinch or ⌘-scroll to zoom.</span>
           <span :class="spacer" />
           <Button size="sm" icon="lucide:plus" @click="edit((s) => ({ ...s, sections: appendSection(s, newId) }))">Add section</Button>
           <Button size="sm" icon="lucide:scissors" :disabled="!song.sections.length" @click="edit((s) => ({ ...s, sections: splitAt(s, cursor, newId) }))">Split at cursor</Button>
