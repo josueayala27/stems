@@ -21,9 +21,9 @@ import { usePanel } from '~/shell/panel'
 
 const route = useRoute()
 const player = usePlayer()
-/** The setlist rail: hide with B or the button, drag its edge to resize; hidden on narrow windows. */
+/** The setlist rail: hide with B or the button; drag its edge to resize, or far left to hide it. */
 const RAIL_WIDTH = 260
-const rail = usePanel('play.setlist', { width: RAIL_WIDTH, min: 180, max: 440, hideBelow: 1100 })
+const rail = usePanel('play.setlist', { width: RAIL_WIDTH, min: 180, max: 440 })
 const options = usePerformOptions()
 const smooth = useSmoothPosition()
 const setlists = ref<SetlistSummary[]>([])

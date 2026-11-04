@@ -5,9 +5,11 @@ import { computed } from 'vue'
 import { Badge, Divider, IconButton } from '~/ui'
 import { formatFrames } from '~/engine/engine'
 import { usePlayer } from '~/engine/player'
+import { useSidebar } from './sidebar'
 
 // Readouts mirror the engine state; the engine is the clock.
 const player = usePlayer()
+const sidebar = useSidebar()
 const readouts = computed(() => {
   const song = player.song.value
   return [
@@ -61,6 +63,13 @@ const spacer = css({ flex: '1' })
 
 <template>
   <header :class="root">
+    <IconButton
+      :icon="sidebar.collapsed.value ? 'lucide:panel-left-open' : 'lucide:panel-left-close'"
+      :label="sidebar.collapsed.value ? 'Show the sidebar (⌘B)' : 'Collapse the sidebar (⌘B)'"
+      variant="ghost"
+      size="sm"
+      @click="sidebar.toggle()"
+    />
     <NuxtLink to="/" :class="brand" aria-label="Stems, Play workspace">
       <span :class="mark" aria-hidden="true">S</span>
       <span :class="wordmark">Stems</span>

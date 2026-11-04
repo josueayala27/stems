@@ -2,43 +2,28 @@
 import { css } from 'styled-system/css'
 import { NuxtPage } from '#components'
 import { IconButton } from '~/ui'
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import AppSidebar from '~/shell/AppSidebar.vue'
 import AppToolbar from '~/shell/AppToolbar.vue'
 import TransportBar from '~/engine/TransportBar.vue'
+import ResizeHandle from '~/shell/ResizeHandle.vue'
+import { SIDEBAR_RAIL, SIDEBAR_WIDTH, useSidebar } from '~/shell/sidebar'
 
 const route = useRoute()
 
-// Collapse to an icon rail on narrow windows. The manual toggle is remembered, and a window that
-// becomes narrow collapses it again.
-const NARROW = '(max-width: 1200px)'
-const SAVED = 'stems.sidebar.collapsed'
-const collapsed = ref(false)
-let query: MediaQueryList | undefined
-function onQuery(event: MediaQueryListEvent): void {
-  collapsed.value = event.matches
-}
-function toggleSidebar(): void {
-  collapsed.value = !collapsed.value
-  try {
-    window.localStorage.setItem(SAVED, String(collapsed.value))
-  } catch {
-    // Storage unavailable: the choice lasts this session.
+// The sidebar never collapses on its own: drag its edge to resize it, or narrower to snap it to
+// icons (and back out to open it); ⌘B and the toolbar button toggle it (`shell/sidebar.ts`).
+const sidebarState = useSidebar()
+const collapsed = sidebarState.collapsed
+function onKey(event: KeyboardEvent): void {
+  if ((event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && event.code === 'KeyB') {
+    event.preventDefault()
+    sidebarState.toggle()
   }
 }
-onMounted(() => {
-  query = window.matchMedia(NARROW)
-  let saved: string | null = null
-  try {
-    saved = window.localStorage.getItem(SAVED)
-  } catch {
-    saved = null
-  }
-  collapsed.value = query.matches || saved === 'true'
-  query.addEventListener('change', onQuery)
-})
-onBeforeUnmount(() => query?.removeEventListener('change', onQuery))
+onMounted(() => window.addEventListener('keydown', onKey))
+onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 
 const shell = css({ display: 'flex', flexDirection: 'column', h: 'full', minH: '0', bg: 'bg.app', color: 'fg.default', overflow: 'hidden' })
 const body = css({ display: 'flex', flex: '1', minH: '0' })
@@ -46,14 +31,13 @@ const sidebar = css({
   position: 'relative',
   display: 'flex',
   flexDirection: 'column',
-  w: 'sidebar',
   flexShrink: '0',
   h: 'full',
   bg: 'bg.panel',
   borderRightWidth: '1px',
   borderColor: 'border.default',
 })
-const sidebarCollapsed = css({ w: '[52px]' })
+const sidebarCollapsed = css({ w: '[52px]' }) // SIDEBAR_RAIL
 const nav = css({ flex: '1', minH: '0' })
 const toggle = css({ flexShrink: '0', display: 'flex', p: '2', borderTopWidth: '1px', borderColor: 'border.default' })
 const toggleCollapsed = css({ justifyContent: 'center' })
@@ -81,15 +65,25 @@ const skip = css({
     <AppToolbar />
     <TransportBar />
     <div :class="body">
-      <aside :class="[sidebar, collapsed ? sidebarCollapsed : '']" aria-label="Workspace navigation">
+      <aside
+        :class="[sidebar, collapsed ? sidebarCollapsed : '']"
+        :style="collapsed ? undefined : { width: `${sidebarState.width.value}px` }"
+        aria-label="Workspace navigation"
+      >
+        <ResizeHandle
+          :width="collapsed ? SIDEBAR_RAIL : sidebarState.width.value"
+          label="Resize the sidebar"
+          @resize="sidebarState.resize"
+          @reset="sidebarState.resize(SIDEBAR_WIDTH)"
+        />
         <div :class="nav"><AppSidebar :collapsed="collapsed" /></div>
         <div :class="[toggle, collapsed ? toggleCollapsed : '']">
           <IconButton
             :icon="collapsed ? 'lucide:panel-left-open' : 'lucide:panel-left-close'"
-            :label="collapsed ? 'Expand sidebar' : 'Collapse sidebar'"
+            :label="collapsed ? 'Expand sidebar (⌘B)' : 'Collapse sidebar (⌘B)'"
             variant="ghost"
             size="sm"
-            @click="toggleSidebar"
+            @click="sidebarState.toggle()"
           />
         </div>
       </aside>

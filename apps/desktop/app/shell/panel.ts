@@ -1,5 +1,5 @@
 // Panels the musician can hide and resize, like a DAW's browser: the choice is remembered per
-// panel in localStorage. Narrow windows hide a panel until the musician shows it again.
+// panel in localStorage. Dragging the edge well below the minimum width hides the panel.
 import { onBeforeUnmount, onMounted, ref, watch, type Ref } from 'vue'
 
 export interface PanelState {
@@ -71,6 +71,12 @@ export function usePanel(key: string, options: { width: number; min: number; max
       update()
     },
     resize(next: number) {
+      if (next < options.min - 60) {
+        hidden.value = true
+        squeezed.value = false
+        update()
+        return
+      }
       width.value = Math.round(Math.min(options.max, Math.max(options.min, next)))
     },
   }
