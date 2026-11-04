@@ -10,16 +10,32 @@ import TransportBar from '~/engine/TransportBar.vue'
 
 const route = useRoute()
 
-// Collapse to an icon rail on narrow windows; a manual toggle overrides until the next resize.
-const NARROW = '(max-width: 900px)'
+// Collapse to an icon rail on narrow windows. The manual toggle is remembered, and a window that
+// becomes narrow collapses it again.
+const NARROW = '(max-width: 1200px)'
+const SAVED = 'stems.sidebar.collapsed'
 const collapsed = ref(false)
 let query: MediaQueryList | undefined
 function onQuery(event: MediaQueryListEvent): void {
   collapsed.value = event.matches
 }
+function toggleSidebar(): void {
+  collapsed.value = !collapsed.value
+  try {
+    window.localStorage.setItem(SAVED, String(collapsed.value))
+  } catch {
+    // Storage unavailable: the choice lasts this session.
+  }
+}
 onMounted(() => {
   query = window.matchMedia(NARROW)
-  collapsed.value = query.matches
+  let saved: string | null = null
+  try {
+    saved = window.localStorage.getItem(SAVED)
+  } catch {
+    saved = null
+  }
+  collapsed.value = query.matches || saved === 'true'
   query.addEventListener('change', onQuery)
 })
 onBeforeUnmount(() => query?.removeEventListener('change', onQuery))
@@ -73,7 +89,7 @@ const skip = css({
             :label="collapsed ? 'Expand sidebar' : 'Collapse sidebar'"
             variant="ghost"
             size="sm"
-            @click="collapsed = !collapsed"
+            @click="toggleSidebar"
           />
         </div>
       </aside>

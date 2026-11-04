@@ -1,12 +1,15 @@
 <script setup lang="ts">
 import { css } from 'styled-system/css'
 import { Icon, NuxtLink } from '#components'
+import { computed } from 'vue'
 import { useRoute } from 'vue-router'
+import { usePlayer } from '~/engine/player'
 import { NAV_SECTIONS, isNavActive, type NavItem } from './nav'
 
 withDefaults(defineProps<{ collapsed?: boolean }>(), { collapsed: false })
 
 const route = useRoute()
+const output = computed(() => usePlayer().output.value)
 
 function isActive(item: NavItem): boolean {
   return isNavActive(item, route.path)
@@ -68,7 +71,9 @@ const srOnly = css({ position: 'absolute', w: '[1px]', h: '[1px]', overflow: 'hi
         <Icon name="lucide:audio-lines" :size="16" aria-hidden="true" />
         <div :class="statusText">
           <p :class="statusTitle">Audio output</p>
-          <p :class="statusDetail">No device selected</p>
+          <p :class="statusDetail" :title="output ? `${output.name} · ${output.channels} out · ${output.sampleRate / 1000} kHz` : undefined">
+            {{ output ? `${output.name} · ${output.channels} out` : 'Opens when you play' }}
+          </p>
         </div>
       </div>
     </div>

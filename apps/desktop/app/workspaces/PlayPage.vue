@@ -16,9 +16,14 @@ import { usePlayer, useSmoothPosition } from '~/engine/player'
 import { fromEngine } from '~/engine/songDoc'
 import SectionStrip from './play/SectionStrip.vue'
 import TrackLanes from './play/TrackLanes.vue'
+import ResizeHandle from '~/shell/ResizeHandle.vue'
+import { usePanel } from '~/shell/panel'
 
 const route = useRoute()
 const player = usePlayer()
+/** The setlist rail: hide with B or the button, drag its edge to resize; hidden on narrow windows. */
+const RAIL_WIDTH = 260
+const rail = usePanel('play.setlist', { width: RAIL_WIDTH, min: 180, max: 440, hideBelow: 1100 })
 const options = usePerformOptions()
 const smooth = useSmoothPosition()
 const setlists = ref<SetlistSummary[]>([])
@@ -117,6 +122,7 @@ function onKeyDown(event: KeyboardEvent) {
     KeyK: () => player.skipNextSection(),
     KeyN: () => player.nextSongNow(),
     Escape: () => player.cancelArmed(),
+    KeyB: () => rail.toggle(),
     KeyP: () => (player.locked.value = !player.locked.value),
   }
   const action = actions[event.code]
@@ -147,7 +153,9 @@ function itemState(at: number): 'current' | 'next' | 'played' | null {
 }
 
 const root = css({ display: 'grid', gridTemplateColumns: '[260px 1fr]', gridTemplateRows: '[auto minmax(0, 1fr)]', h: 'full', minH: '0' })
-const rail = css({ gridRow: '2', gridColumn: '1', minH: '0' })
+const railClass = css({ position: 'relative', gridRow: '2', gridColumn: '1', minH: '0', minW: '0', overflow: 'hidden' })
+const narrowHide = css({ '@media (max-width: 1250px)': { display: 'none' } })
+const tightHide = css({ '@media (max-width: 1000px)': { display: 'none' } })
 const railBody = css({ display: 'flex', flexDirection: 'column', gap: '2', p: '3', minH: '0', overflowY: 'auto' })
 const railItem = css({
   display: 'grid',
@@ -188,7 +196,8 @@ const divider = css({ w: '[1px]', h: '[28px]', bg: 'border.default', mx: '1', fl
 const group = css({ display: 'flex', alignItems: 'center', gap: '2' })
 const groupLabel = css({ textStyle: 'ui.label', color: 'fg.subtle', textTransform: 'uppercase' })
 const spacer = css({ flex: '1' })
-const level = css({ display: 'flex', alignItems: 'center', gap: '1.5', w: '[150px]', flexShrink: '1', minW: '[96px]' })
+const level = css({ display: 'flex', alignItems: 'center', gap: '1.5', flexShrink: '1', minW: '0' })
+const levelSlider = css({ w: '[110px]' })
 const readout = css({ display: 'flex', flexDirection: 'column', minW: '[96px]', flexShrink: '0', px: '2', py: '1', borderRadius: 'md', bg: 'bg.input' })
 const readoutBig = css({ fontFamily: 'mono', textStyle: 'ui.title', color: 'fg.default', fontVariantNumeric: 'tabular-nums' })
 const readoutSmall = css({ fontFamily: 'mono', textStyle: 'ui.xs', color: 'fg.subtle', fontVariantNumeric: 'tabular-nums' })
@@ -208,8 +217,9 @@ const errorText = css({ textStyle: 'ui.xs', color: 'danger.default', maxW: '[320
 </script>
 
 <template>
-  <div :class="root">
-    <div :class="rail">
+  <div :class="root" :style="{ gridTemplateColumns: `${rail.visible.value ? rail.width.value : 0}px minmax(0, 1fr)` }">
+    <div v-if="rail.visible.value" :class="railClass">
+      <ResizeHandle :width="rail.width.value" label="Resize the setlist" @resize="rail.resize" @reset="rail.resize(RAIL_WIDTH)" />
       <Panel title="Setlist" bordered="right">
         <div :class="railBody">
           <Select v-model="chosen" :options="setlistOptions" placeholder="Choose a setlist" :disabled="player.locked.value || !setlists.length" aria-label="Setlist" />
@@ -238,6 +248,13 @@ const errorText = css({ textStyle: 'ui.xs', color: 'danger.default', maxW: '[320
     </div>
 
     <header :class="transport" aria-label="Transport">
+      <IconButton
+        icon="lucide:panel-left"
+        :label="rail.visible.value ? 'Hide the setlist (B)' : 'Show the setlist (B)'"
+        size="md"
+        :active="rail.visible.value"
+        @click="rail.toggle()"
+      />
       <button
         type="button"
         :class="playButton"
@@ -267,12 +284,12 @@ const errorText = css({ textStyle: 'ui.xs', color: 'danger.default', maxW: '[320
       </div>
       <Badge v-if="status" :tone="status.tone" dot :label="status.label" />
       <IconButton v-if="player.state.value?.armed !== 'none' && player.state.value" icon="lucide:x" label="Cancel (Esc)" size="sm" @click="player.cancelArmed()" />
-      <Badge v-if="health" :tone="health.bad ? 'danger' : 'neutral'" size="sm" :label="health.label" title="Audio engine load and dropouts since the device opened" />
+      <Badge v-if="health" :class="narrowHide" :tone="health.bad ? 'danger' : 'neutral'" size="sm" :label="health.label" title="Audio engine load and dropouts since the device opened" />
       <span v-if="player.error.value" :class="errorText" role="alert" :title="player.error.value">{{ player.error.value }}</span>
 
       <span :class="spacer" />
       <div :class="group">
-        <span :class="groupLabel">Quantize</span>
+        <span :class="[groupLabel, narrowHide]">Quantize</span>
         <SegmentedControl v-model="player.quantize.value" :options="quantizeOptions" :fill="false" aria-label="Quantize" />
       </div>
       <div :class="level">
@@ -283,7 +300,7 @@ const errorText = css({ textStyle: 'ui.xs', color: 'danger.default', maxW: '[320
           :active="options.click.enabled"
           @click="options.click.enabled = !options.click.enabled"
         />
-        <Slider v-model="clickLevel" :min="0" :max="100" :disabled="!options.click.enabled" aria-label="Click level" />
+        <div :class="[levelSlider, tightHide]"><Slider v-model="clickLevel" :min="0" :max="100" :disabled="!options.click.enabled" aria-label="Click level" /></div>
       </div>
       <div :class="level">
         <IconButton
@@ -293,7 +310,7 @@ const errorText = css({ textStyle: 'ui.xs', color: 'danger.default', maxW: '[320
           :active="options.guide.enabled"
           @click="options.guide.enabled = !options.guide.enabled"
         />
-        <Slider v-model="guideLevel" :min="0" :max="100" :disabled="!options.guide.enabled" aria-label="Guide level" />
+        <div :class="[levelSlider, tightHide]"><Slider v-model="guideLevel" :min="0" :max="100" :disabled="!options.guide.enabled" aria-label="Guide level" /></div>
       </div>
       <span :class="divider" />
       <IconButton
