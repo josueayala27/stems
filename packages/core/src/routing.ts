@@ -207,3 +207,78 @@ export function removeBus(rig: Rig, name: string): Rig {
 export function updateBus(rig: Rig, name: string, patch: Partial<Omit<Bus, 'id' | 'name'>>): Rig {
   return { ...rig, buses: rig.buses.map((bus) => (bus.name === name ? { ...bus, ...patch } : bus)) }
 }
+
+// ── Simple output picking (the Mixer) ───────────────────────────────────────────────────────
+
+export interface OutputChoice {
+  /** `1/2`, `3`, `Off`. */
+  label: string
+  channels: number[]
+}
+
+/** Stereo pairs first (1/2, 3/4…), then single outputs, then off. */
+export function outputChoices(deviceChannels: number): OutputChoice[] {
+  const pairs: OutputChoice[] = []
+  for (let left = 0; left + 1 < deviceChannels; left += 2) pairs.push({ label: `${left + 1}/${left + 2}`, channels: [left, left + 1] })
+  const singles: OutputChoice[] = Array.from({ length: deviceChannels }, (_, channel) => ({ label: `${channel + 1}`, channels: [channel] }))
+  return [...pairs, ...singles, { label: 'Off', channels: [] }]
+}
+
+/** The label for a bus's channels: a choice from `outputChoices`, or the folded targets for anything else. */
+export function outputLabel(channels: readonly number[], deviceChannels: number): string {
+  if (channels.length === 0) return 'Off'
+  const choice = outputChoices(deviceChannels).find((entry) => entry.channels.length === channels.length && entry.channels.every((c, i) => c === channels[i]))
+  return choice?.label ?? formatTargets(channelTargets(channels, deviceChannels))
+}
+
+export type QuickSetup = 'stereo' | 'inEars' | 'inEarsLtc'
+
+/** Outputs a quick setup needs. */
+export const QUICK_SETUP_OUTPUTS: Record<QuickSetup, number> = { stereo: 2, inEars: 4, inEarsLtc: 5 }
+
+/**
+ * Replace the rig's buses with a ready layout for a device with `deviceChannels` outputs. Keeps
+ * the rig's id, name and device. Stems keep finding `FOH`, the bus name new tracks start on.
+ * - stereo: everything on 1/2;
+ * - inEars: the audience on 1/2 (FOH), click and guide with the band mix on 3/4;
+ * - inEarsLtc: as inEars, plus timecode alone on the last output.
+ */
+export function quickSetup(rig: Rig, setup: QuickSetup, deviceChannels: number, newId: () => string = () => crypto.randomUUID()): Rig {
+  if (deviceChannels < QUICK_SETUP_OUTPUTS[setup]) return rig
+  if (setup === 'stereo') {
+    return {
+      ...rig,
+      buses: [bus(newId(), 'FOH', false)],
+      routing: [{ bus: 'FOH', channels: [0, 1] }],
+      clickBus: 'FOH',
+      guideBus: 'FOH',
+      padBus: 'FOH',
+      timecodeBus: null,
+    }
+  }
+  const withLtc = setup === 'inEarsLtc'
+  return {
+    ...rig,
+    buses: [bus(newId(), 'FOH', true), bus(newId(), 'In-ears', false), ...(withLtc ? [bus(newId(), 'LTC', false)] : [])],
+    routing: [
+      { bus: 'FOH', channels: [0, 1] },
+      { bus: 'In-ears', channels: [2, 3] },
+      ...(withLtc ? [{ bus: 'LTC', channels: [deviceChannels - 1] }] : []),
+    ],
+    clickBus: 'In-ears',
+    guideBus: 'In-ears',
+    padBus: 'FOH',
+    timecodeBus: withLtc ? 'LTC' : null,
+  }
+}
+
+/** A new output on the first pair (or single output) no other output uses. */
+export function addOutput(rig: Rig, deviceChannels: number, newId: () => string = () => crypto.randomUUID()): Rig {
+  const added = addBus(rig, newId)
+  if (added === rig) return rig
+  const used = new Set(rig.routing.flatMap((route) => route.channels))
+  const free = outputChoices(deviceChannels).find((choice) => choice.channels.length > 0 && choice.channels.every((c) => !used.has(c)))
+  const name = added.buses.at(-1)!.name
+  const renamed = renameBus(added, name, nextBusName(rig, 'Output'))
+  return setChannels(renamed, renamed.buses.at(-1)!.name, free?.channels ?? [])
+}

@@ -2,6 +2,11 @@ import { rigSchema, songSchema, type Rig } from '@stems/schema'
 import { describe, expect, it } from 'vitest'
 import {
   addBus,
+  addOutput,
+  channelsOf,
+  outputChoices,
+  outputLabel,
+  quickSetup,
   channelTargets,
   defaultRig,
   formatTargets,
@@ -161,5 +166,44 @@ describe('bus editing', () => {
   it('keeps at least one bus', () => {
     const rig = rigSchema.parse(defaultRig(2, id))
     expect(removeBus(rig, 'Main')).toBe(rig)
+  })
+})
+
+describe('simple outputs', () => {
+  it('offers pairs, then singles, then off', () => {
+    expect(outputChoices(4).map((choice) => choice.label)).toEqual(['1/2', '3/4', '1', '2', '3', '4', 'Off'])
+    expect(outputChoices(3).map((choice) => choice.label)).toEqual(['1/2', '1', '2', '3', 'Off'])
+  })
+
+  it('labels channels as a choice, or as folded targets when custom', () => {
+    expect(outputLabel([2, 3], 8)).toBe('3/4')
+    expect(outputLabel([5], 8)).toBe('6')
+    expect(outputLabel([], 8)).toBe('Off')
+    expect(outputLabel([0, 1, 8], 16)).toBe('1/2 · 9 mono')
+  })
+
+  it('quick setups fit the device and keep stems on FOH', () => {
+    const base = rigSchema.parse(defaultRig(2, id))
+    const stereo = quickSetup(base, 'stereo', 2, id)
+    expect(routingDoc(stereo)).toMatchObject({ stemBus: 0, clickBus: 0, timecodeBus: null })
+    expect(routingWarnings(stereo, 2)).toEqual([])
+    expect(quickSetup(base, 'inEars', 2, id)).toBe(base)
+
+    const ltc = rigSchema.parse(quickSetup(base, 'inEarsLtc', 8, id))
+    expect(ltc.id).toBe(base.id)
+    expect(ltc.routing).toEqual([
+      { bus: 'FOH', channels: [0, 1] },
+      { bus: 'In-ears', channels: [2, 3] },
+      { bus: 'LTC', channels: [7] },
+    ])
+    expect(routingDoc(ltc)).toMatchObject({ stemBus: 0, clickBus: 1, guideBus: 1, timecodeBus: 2 })
+    expect(routingWarnings(ltc, 8)).toEqual([])
+  })
+
+  it('adds an output on the first free pair', () => {
+    const rig = quickSetup(rigSchema.parse(defaultRig(2, id)), 'inEars', 8, id)
+    const added = addOutput(rig, 8, id)
+    expect(added.buses.at(-1)?.name).toBe('Output 1')
+    expect(channelsOf(added, 'Output 1')).toEqual([4, 5])
   })
 })
