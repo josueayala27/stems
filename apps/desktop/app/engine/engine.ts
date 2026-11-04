@@ -86,7 +86,15 @@ export interface SongDoc {
   markers: { sample: number; action: 'none' | 'stop' | 'loop' | 'next' }[]
   /** LTC label at the song start, `HH:MM:SS:FF`; `null` uses the timecode options' start. */
   timecodeStart: string | null
+  /** MIDI cue events at song samples (marker anchors resolved). */
+  events: { sample: number; action: MidiAction }[]
 }
+
+/** The MIDI actions of `@stems/schema` cue events, as the engine reads them. Channels are 1–16. */
+export type MidiAction =
+  | { kind: 'midiProgram'; channel: number; program: number }
+  | { kind: 'midiNote'; channel: number; note: number; velocity: number }
+  | { kind: 'midiCc'; channel: number; controller: number; value: number }
 
 export interface TransitionDoc {
   kind: 'stop' | 'auto' | 'crossfade'
@@ -177,6 +185,10 @@ export const engine = {
   clearNext: () => call<void>('engine_clear_next'),
   setOptions: (options: PerformOptions) => call<void>('engine_set_options', { options }),
   setPad: (file: string | null) => call<void>('engine_set_pad', { file }),
+  /** MIDI output port names; on macOS the first is the virtual `Stems` source. */
+  midiOutputs: () => call<string[]>('midi_outputs'),
+  /** Send song cue events to `port`, or nowhere with `null`. */
+  setMidiOutput: (port: string | null) => call<void>('midi_set_output', { port }),
   /** The rig's buses and their channels (`routingDoc` in `@stems/core`). */
   setRouting: (routing: RoutingDoc) => call<void>('engine_set_routing', { routing }),
   /** Run a transport command now, or at `at` (a frame of the engine clock). */

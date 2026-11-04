@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // Arrange: sections and markers on the song's waveform, every boundary on a bar line.
-import type { Marker, Section, Song } from '@stems/schema'
+import type { CueEvent, Marker, Section, Song } from '@stems/schema'
 import { css } from 'styled-system/css'
 import { NuxtLink } from '#components'
 import { computed, onMounted, ref, shallowRef } from 'vue'
@@ -11,6 +11,7 @@ import { library } from '~/data/library'
 import { getSong, saveSong } from '~/data/songs'
 import { usePlayer } from '~/engine/player'
 import { addMarker, appendSection, barAt, barCount, barStart, gridFor, SECTION_COLORS, setSectionBars, setTempo, snapToBar, splitAt } from './arrange/arrangement'
+import { anchorFromKey, anchorKey, anchorOptions, cueSample, isMidiCue, MIDI_KINDS, newCue, noteName, removeMarker, updateCue, withKind, type MidiKind } from './arrange/cues'
 
 const props = defineProps<{ songId: string }>()
 const player = usePlayer()
@@ -27,6 +28,7 @@ const overviewColor = ref('blue')
 const newId = () => crypto.randomUUID()
 
 onMounted(async () => {
+  if (player.output.value) void player.refreshMidi()
   song.value = await getSong(props.songId).catch(() => null)
   loading.value = false
   // The overview shows the first stem (click and guide are not music to look at).
@@ -96,6 +98,39 @@ const denominatorOptions: SelectOption<number>[] = [2, 4, 8, 16].map((value) => 
 
 function changeTempo(bpm: number, numerator: number, denominator: number) {
   edit((current) => setTempo(current, bpm, numerator, denominator as 2 | 4 | 8 | 16))
+}
+
+// ── Cue events ──────────────────────────────────────────────────────────────────────────────
+
+const NO_MIDI = ''
+const midiOptions = computed<SelectOption<string>[]>(() => {
+  const ports = player.midiPorts.value.map((port) => ({ value: port, label: port === 'Stems' ? 'Stems (virtual, this Mac)' : port }))
+  const current = player.rig.value?.midiOutput
+  const missing = current && !player.midiPorts.value.includes(current) ? [{ value: current, label: `${current} (not connected)` }] : []
+  return [{ value: NO_MIDI, label: 'MIDI off' }, ...ports, ...missing]
+})
+function setMidiOutput(port: string | undefined) {
+  const current = player.rig.value
+  if (current && port !== undefined) void player.applyRig({ ...current, midiOutput: port === NO_MIDI ? null : port })
+}
+
+const cues = computed(() => (song.value ? [...song.value.events].filter(isMidiCue).sort((a, b) => cueSample(song.value!, a) - cueSample(song.value!, b)) : []))
+function barLabel(sample: number): string {
+  return grid.value ? `Bar ${barAt(grid.value, sample)}` : 'Song start'
+}
+function addCueAtCursor() {
+  edit((current) => ({ ...current, events: [...current.events, newCue({ kind: 'sample', sample: cursor.value }, newId)] }))
+}
+function setCueAnchor(cue: CueEvent, key: string | undefined) {
+  const at = key ? anchorFromKey(key) : null
+  if (at) edit((current) => updateCue(current, cue.id, { at }))
+}
+function setCueKind(cue: CueEvent, kind: MidiKind | undefined) {
+  if (kind && isMidiCue(cue)) edit((current) => updateCue(current, cue.id, { action: withKind(cue.action, kind) }))
+}
+function setCueField(cue: CueEvent, field: string, value: number) {
+  if (!Number.isFinite(value)) return
+  edit((current) => updateCue(current, cue.id, { action: { ...cue.action, [field]: Math.round(value) } as CueEvent['action'] }))
 }
 
 async function save() {
@@ -266,7 +301,7 @@ const statusText = css({ textStyle: 'ui.sm', color: 'fg.muted' })
           <div v-for="marker in song.markers" :key="marker.id" :class="editor">
             <div :class="editorRow">
               <Input :model-value="marker.name" size="sm" aria-label="Marker name" @update:model-value="(name: string) => updateMarker(marker.id, { name })" />
-              <IconButton icon="lucide:trash-2" label="Delete marker" size="sm" @click="edit((s) => ({ ...s, markers: s.markers.filter((x) => x.id !== marker.id) }))" />
+              <IconButton icon="lucide:trash-2" label="Delete marker" size="sm" @click="edit((s) => removeMarker(s, marker.id))" />
             </div>
             <div :class="editorRow">
               <NumberField
@@ -282,8 +317,59 @@ const statusText = css({ textStyle: 'ui.sm', color: 'fg.muted' })
             </div>
           </div>
         </PanelSection>
-        <PanelSection title="Cue events" collapsible storage-key="arrange.events">
-          <EmptyState title="No cue events" description="MIDI, timecode and Lumen cues arrive with control and sync (M5)." size="sm" />
+        <PanelSection title="MIDI cues" collapsible storage-key="arrange.events">
+          <template #actions>
+            <IconButton icon="lucide:plus" label="Add a MIDI cue at the cursor" size="sm" @click="addCueAtCursor" />
+          </template>
+          <div :class="editorRow">
+            <Select
+              v-if="player.rig.value"
+              :model-value="player.rig.value.midiOutput ?? NO_MIDI"
+              :options="midiOptions"
+              size="sm"
+              aria-label="MIDI output"
+              @update:model-value="setMidiOutput"
+            />
+            <Button v-else size="sm" icon="lucide:cable" @click="player.refreshMidi()">Connect MIDI</Button>
+          </div>
+          <EmptyState v-if="!cues.length" title="No MIDI cues" description="Change a synth patch at the song start, or send a note or CC at a section or marker." size="sm" />
+          <div v-for="cue in cues" :key="cue.id" :class="editor">
+            <div :class="editorRow">
+              <Select
+                :model-value="anchorKey(cue.at)"
+                :options="anchorOptions(song, cue.at, barLabel)"
+                size="sm"
+                aria-label="When"
+                @update:model-value="(key: string | undefined) => setCueAnchor(cue, key)"
+              />
+              <IconButton icon="lucide:trash-2" label="Delete cue" size="sm" @click="edit((s) => ({ ...s, events: s.events.filter((x) => x.id !== cue.id) }))" />
+            </div>
+            <div v-if="isMidiCue(cue)" :class="editorRow">
+              <Select :model-value="cue.action.kind" :options="MIDI_KINDS" size="sm" aria-label="Message" @update:model-value="(kind?: MidiKind) => setCueKind(cue, kind)" />
+              <NumberField :model-value="String(cue.action.channel)" :min="1" :max="16" :decimals="0" label="Ch" size="sm" @update:model-value="(value: string) => setCueField(cue, 'channel', Number(value))" />
+            </div>
+            <div v-if="cue.action.kind === 'midiProgram'" :class="editorRow">
+              <NumberField
+                :model-value="String(cue.action.program + 1)"
+                :min="1"
+                :max="128"
+                :decimals="0"
+                label="Patch"
+                size="sm"
+                @update:model-value="(value: string) => setCueField(cue, 'program', Number(value) - 1)"
+              />
+            </div>
+            <div v-else-if="cue.action.kind === 'midiNote'" :class="editorRow">
+              <NumberField :model-value="String(cue.action.note)" :min="0" :max="127" :decimals="0" label="Note" size="sm" @update:model-value="(value: string) => setCueField(cue, 'note', Number(value))" />
+              <span :class="hint">{{ noteName(cue.action.note) }}</span>
+              <NumberField :model-value="String(cue.action.velocity)" :min="1" :max="127" :decimals="0" label="Vel" size="sm" @update:model-value="(value: string) => setCueField(cue, 'velocity', Number(value))" />
+            </div>
+            <div v-else-if="cue.action.kind === 'midiCc'" :class="editorRow">
+              <NumberField :model-value="String(cue.action.controller)" :min="0" :max="127" :decimals="0" label="CC" size="sm" @update:model-value="(value: string) => setCueField(cue, 'controller', Number(value))" />
+              <NumberField :model-value="String(cue.action.value)" :min="0" :max="127" :decimals="0" label="Value" size="sm" @update:model-value="(value: string) => setCueField(cue, 'value', Number(value))" />
+            </div>
+          </div>
+          <p :class="hint">Cues fire as the play head reaches them, on jumps and on every vamp pass. Save to hear changes.</p>
         </PanelSection>
       </Panel>
     </div>

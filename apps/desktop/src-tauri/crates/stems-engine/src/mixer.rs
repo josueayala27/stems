@@ -15,6 +15,8 @@ use crate::song::{MarkerAction, Song, Span, MAX_FADE};
 use crate::source::Source;
 use crate::state::{ArmedKind, EngineState};
 use crate::{CHANNELS, MAX_BLOCK, MAX_TRACKS};
+use crate::song::SongEvent;
+use stems_control::MidiMessage;
 
 pub use crate::song::{Track, TrackRole, TrackSpec};
 
@@ -157,9 +159,22 @@ fn mix_song(
     underruns
 }
 
+/// Queue the cue events in song frames `[from, to)`. Messages that find the queue full are counted.
+fn fire(events: &[SongEvent], from: u64, to: u64, midi: &mut rtrb::Producer<MidiMessage>, dropped: &mut u64) {
+    let first = events.partition_point(|event| event.at < from);
+    for event in events[first..].iter().take_while(|event| event.at < to) {
+        if midi.push(event.message).is_err() {
+            *dropped += 1;
+        }
+    }
+}
+
 pub struct Mixer {
     sample_rate: u32,
     commands: rtrb::Consumer<Scheduled>,
+    /// Cue event messages for the MIDI thread.
+    midi: rtrb::Producer<MidiMessage>,
+    dropped_events: u64,
     garbage: rtrb::Producer<Garbage>,
     state: triple_buffer::Input<EngineState>,
     schedule: Vec<Scheduled>,
@@ -203,10 +218,13 @@ impl Mixer {
         commands: rtrb::Consumer<Scheduled>,
         garbage: rtrb::Producer<Garbage>,
         state: triple_buffer::Input<EngineState>,
+        midi: rtrb::Producer<MidiMessage>,
     ) -> Self {
         Self {
             sample_rate,
             commands,
+            midi,
+            dropped_events: 0,
             garbage,
             state,
             schedule: Vec::with_capacity(SCHEDULE_CAPACITY),
@@ -785,7 +803,9 @@ impl Mixer {
                     self.jump,
                     false,
                 );
-                self.position += playable as u64;
+                let end = self.position + playable as u64;
+                fire(&song.timeline.events, self.position, end, &mut self.midi, &mut self.dropped_events);
+                self.position = end;
             } else if self.jump.active() {
                 mix_song(song, &self.routing, self.position, frames, &mut self.buses, offset, &mut self.scratch, None, self.jump, true);
             }
@@ -879,6 +899,7 @@ impl Mixer {
         state.xruns = self.xruns;
         state.underruns = self.underruns;
         state.deferred_commands = self.deferred;
+        state.dropped_events = self.dropped_events;
         state.cpu_load = self.cpu_load;
         for side in 0..2 {
             self.master[side] = self.master_peak[side].max(self.master[side] * release);
@@ -1585,5 +1606,54 @@ mod tests {
         let out = render_device(&mut mixer, 4_800, 16);
         assert!(out.chunks_exact(16).all(|frame| frame[0] == 0.5 && frame[1] == 0.5 && frame[2..].iter().all(|&s| s == 0.0)));
         assert_eq!(engine.state().track_buses[1], u8::MAX);
+    }
+
+    // ── M5 MIDI cue events ───────────────────────────────────────────────────────────────
+
+    fn with_events(events: &[(u64, u8)], sections: &[(u64, u64)]) -> (Engine, Mixer, rtrb::Consumer<MidiMessage>) {
+        let (mut engine, mixer) = engine::new(RATE);
+        let mut timeline = timeline(sections, &[]);
+        timeline.events = events.iter().map(|&(at, program)| SongEvent { at, message: MidiMessage::program_change(1, program) }).collect();
+        engine.send(Command::LoadSong(song(1, vec![index_track(4 * BAR as usize)], timeline))).unwrap();
+        let queue = engine.take_midi().unwrap();
+        (engine, mixer, queue)
+    }
+
+    fn programs(queue: &mut rtrb::Consumer<MidiMessage>) -> Vec<u8> {
+        std::iter::from_fn(|| queue.pop().ok()).map(|message| message.bytes()[1]).collect()
+    }
+
+    #[test]
+    fn cue_events_fire_once_in_the_block_that_plays_them() {
+        let (mut engine, mut mixer, mut queue) = with_events(&[(0, 1), (1_000, 2), (BAR, 3)], &[]);
+        render_no_alloc(&mut mixer, 512, 512);
+        assert!(programs(&mut queue).is_empty(), "stopped: nothing fires");
+        engine.send(Command::Play).unwrap();
+        render_no_alloc(&mut mixer, 512, 512);
+        assert_eq!(programs(&mut queue), [1]);
+        render_no_alloc(&mut mixer, 1_024, 512);
+        assert_eq!(programs(&mut queue), [2]);
+        run(&mut mixer, BAR);
+        assert_eq!(programs(&mut queue), [3]);
+    }
+
+    #[test]
+    fn a_jump_fires_the_events_at_its_target_and_skips_the_rest() {
+        let (mut engine, mut mixer, mut queue) = with_events(&[(BAR, 7), (2 * BAR, 8)], &[(0, BAR), (BAR, 2 * BAR), (2 * BAR, 4 * BAR)]);
+        engine.send(Command::Play).unwrap();
+        render_no_alloc(&mut mixer, 512, 512);
+        engine.send(Command::Arm { action: LiveAction::Jump { to: 2 * BAR }, quantize: Quantize::Now }).unwrap();
+        run(&mut mixer, 1_000);
+        assert_eq!(programs(&mut queue), [8]);
+    }
+
+    #[test]
+    fn a_vamp_fires_its_events_on_every_pass() {
+        let (mut engine, mut mixer, mut queue) = with_events(&[(BAR, 5)], &[(BAR, 2 * BAR)]);
+        engine.send(Command::Seek(BAR)).unwrap();
+        engine.send(Command::Play).unwrap();
+        engine.send(Command::Arm { action: LiveAction::Vamp, quantize: Quantize::Now }).unwrap();
+        run(&mut mixer, 3 * BAR - 10);
+        assert_eq!(programs(&mut queue), [5, 5, 5]);
     }
 }

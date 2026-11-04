@@ -16,3 +16,13 @@ Crate: `apps/desktop/src-tauri/crates/stems-control`. Events are scheduled on th
 - `ltc::LtcDecoder` decodes SMPTE LTC for tests and loopback checks.
 - **Ableton Link**: join a Link session; tempo and phase follow Link or lead it.
 - **Lumen**: Lumen follows Stems through LTC/MTC (already supported in Lumen's `lumen-control`). A later OSC link sends song and section changes.
+
+## MIDI out (M5)
+
+- Cue events (`Song.events`) with a MIDI action (patch change, note, CC) go to the rig's MIDI output (`Rig.midiOutput`). On macOS the first choice is a virtual `Stems` source that apps on the same Mac can read. The action's `port` field is not used yet: every cue goes to the rig's output.
+- The UI resolves anchors to samples (`cueEventDocs`; marker cues follow their marker) and sends them in the song document. The engine converts them to device frames and keeps them on the song timeline.
+- The mixer queues each message, fixed size and allocation free, when the play head crosses it while playing: once per pass, again on each vamp pass, at the target of a jump, never while stopped. A dedicated MIDI thread drains the queue every millisecond and sends through `midir` (CoreMIDI). A message leaves within about one buffer plus 1 ms of the audio callback that played it. A full queue counts `droppedEvents` in the state.
+- A note cue is a trigger: note on, then note off straight after.
+- Messages at one frame keep their order. A song-start patch change is sent as the song starts, so the synth changes before the first note when its own latency allows.
+- Arrange edits cues: when (song start, a section start or a marker), message, channel and value. Patches display as 1–128.
+

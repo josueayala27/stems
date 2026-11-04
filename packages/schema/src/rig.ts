@@ -58,6 +58,8 @@ export const rigSchema = z
     padBus: z.string().default('FOH'),
     /** The LTC bus. `null`, or a name the rig lacks, sends timecode nowhere: it never falls back. */
     timecodeBus: z.string().nullable().default(null),
+    /** MIDI port for song cue events (`Stems` is the virtual source on macOS). `null`: no MIDI out. */
+    midiOutput: z.string().nullable().default(null),
   })
   .superRefine((rig, ctx) => {
     const names = new Set<string>()

@@ -3,7 +3,7 @@ import { defaultRig } from '@stems/core'
 import { rigSchema, setlistSchema } from '@stems/schema'
 import { songFromImport } from '~/data/importSong'
 import { readOptions, DEFAULT_OPTIONS, songHour, validTimecode } from './options'
-import { fromEngine, padAt, songDoc, toEngine, transitionDoc } from './songDoc'
+import { cueEventDocs, fromEngine, padAt, songDoc, toEngine, transitionDoc } from './songDoc'
 
 const song = {
   ...songFromImport({
@@ -89,5 +89,24 @@ describe('timecode options', () => {
     expect(readOptions('{"click":{"gain":0.5}}').timecode).toEqual(DEFAULT_OPTIONS.timecode)
     expect(songDoc(song, null, '03:00:00:00').timecodeStart).toBe('03:00:00:00')
     expect(songDoc(song).timecodeStart).toBeNull()
+  })
+})
+
+describe('cueEventDocs', () => {
+  it('resolves marker anchors, keeps MIDI actions only, drops the port and sorts', () => {
+    const withEvents = {
+      ...song,
+      events: [
+        { id: 'e1', at: { kind: 'marker' as const, markerId: 'm' }, action: { kind: 'midiCc' as const, port: '', channel: 2, controller: 7, value: 100 } },
+        { id: 'e2', at: { kind: 'sample' as const, sample: 0 }, action: { kind: 'midiProgram' as const, port: 'x', channel: 1, program: 4 } },
+        { id: 'e3', at: { kind: 'sample' as const, sample: 10 }, action: { kind: 'lumen' as const, message: 'hi' } },
+        { id: 'e4', at: { kind: 'marker' as const, markerId: 'gone' }, action: { kind: 'midiNote' as const, port: '', channel: 1, note: 60, velocity: 1 } },
+      ],
+    }
+    expect(cueEventDocs(withEvents)).toEqual([
+      { sample: 0, action: { kind: 'midiProgram', channel: 1, program: 4 } },
+      { sample: 400_000, action: { kind: 'midiCc', channel: 2, controller: 7, value: 100 } },
+    ])
+    expect(songDoc(withEvents).events).toHaveLength(2)
   })
 })

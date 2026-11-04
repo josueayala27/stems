@@ -83,6 +83,19 @@ async fn engine_set_routing(host: State<'_, EngineHost>, routing: RoutingDoc) ->
     blocking(move || host.set_routing(routing).map_err(|error| error.to_string())).await
 }
 
+#[tauri::command]
+async fn midi_outputs(host: State<'_, EngineHost>) -> Result<Vec<String>, String> {
+    let host = host.inner().clone();
+    blocking(move || host.midi_ports().map_err(|error| error.to_string())).await
+}
+
+/// Send song cue events to this MIDI port, or nowhere with `null`.
+#[tauri::command]
+async fn midi_set_output(host: State<'_, EngineHost>, port: Option<String>) -> Result<(), String> {
+    let host = host.inner().clone();
+    blocking(move || host.set_midi_output(port).map_err(|error| error.to_string())).await
+}
+
 /// A transport command, now or at `at` (a frame of the engine clock).
 #[tauri::command]
 async fn engine_command(host: State<'_, EngineHost>, command: Transport, at: Option<u64>) -> Result<(), String> {
@@ -168,6 +181,8 @@ pub fn run() {
             engine_set_options,
             engine_set_pad,
             engine_set_routing,
+            midi_outputs,
+            midi_set_output,
             engine_command,
             library_plan_import,
             library_import,

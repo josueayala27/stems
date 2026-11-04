@@ -108,6 +108,16 @@ let listening: Promise<void> | null = null
 const rig = shallowRef<Rig | null>(null)
 const rigs = shallowRef<Rig[]>([])
 const devices = shallowRef<DeviceInfo[]>([])
+const midiPorts = shallowRef<string[]>([])
+
+/** Open the rig's MIDI port. A missing port is reported, not fatal: audio plays on. */
+async function applyMidi(port: string | null) {
+  try {
+    await engine.setMidiOutput(port)
+  } catch (cause) {
+    error.value = `MIDI out unavailable: ${cause}`
+  }
+}
 const saveTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
 /** Run `save` once, `SAVE_DELAY_MS` after the last call with this key. */
@@ -230,6 +240,7 @@ async function ensureOutput(): Promise<OpenedOutput> {
   setCurrentRigId(current.id)
   rig.value = current
   await engine.setRouting(routingDoc(current))
+  if (current.midiOutput) await applyMidi(current.midiOutput)
   const options = usePerformOptions()
   await engine.setOptions(snapshotOptions(options))
   return output.value
@@ -284,6 +295,7 @@ async function applyRig(next: Rig): Promise<void> {
     if (deviceChanged(previous, next)) output.value = await engine.open(outputConfig(next))
     await engine.setRouting(routingDoc(next))
     if (busesChanged(previous, next) || previous?.id !== next.id) await resyncTrackBuses()
+    if (previous?.midiOutput !== next.midiOutput) await applyMidi(next.midiOutput)
   })
 }
 
@@ -340,6 +352,14 @@ export function usePlayer() {
     rig,
     rigs,
     devices,
+    midiPorts,
+    /** List MIDI output ports (opens the audio device first, which loads the rig). */
+    refreshMidi: () =>
+      run(async () => {
+        await listenOnce()
+        await ensureOutput()
+        midiPorts.value = await engine.midiOutputs()
+      }),
 
     /** Open the output if needed, then list devices and rigs (the Settings page). */
     refreshDevices: () =>

@@ -12,12 +12,12 @@ use crate::command::{At, Command, Scheduled, Transition, TransitionKind};
 use crate::decode::FileReader;
 use crate::guide::{self, Cue, GuideOptions, Voices};
 use crate::mixer::{Garbage, Mixer, SCHEDULE_CAPACITY};
-use stems_control::{FrameRate, LtcGenerator, Timecode};
+use stems_control::{FrameRate, LtcGenerator, MidiAction, MidiMessage, Timecode};
 
 use crate::pad::Pad;
 use crate::routing::{Routing, RoutingDoc};
 use crate::sampler::Sampler;
-use crate::song::{Marker, MarkerAction, Song, Span, Timeline, TrackRole, TrackSpec};
+use crate::song::{Marker, MarkerAction, Song, SongEvent, Span, Timeline, TrackRole, TrackSpec};
 use crate::source::Source;
 use crate::state::EngineState;
 use crate::stream::{self, Feeder, FrameReader, Head, StreamFeeder, CUE_SECONDS, HEAD_SECONDS};
@@ -25,6 +25,8 @@ use crate::tempo::{TempoMap, TempoPoint};
 use crate::{EngineError, CHANNELS};
 
 const GARBAGE_CAPACITY: usize = 32;
+/// Cue event messages waiting for the MIDI thread.
+const MIDI_CAPACITY: usize = 256;
 
 // ── Song documents (the `@stems/schema` song, as much as the engine needs) ──────────────────
 
@@ -100,6 +102,16 @@ pub struct SongDoc {
     /// with one timecode hour per song. `None` uses the timecode options' start.
     #[serde(default)]
     pub timecode_start: Option<String>,
+    /// MIDI cue events, anchored to samples (the UI resolves marker anchors).
+    #[serde(default)]
+    pub events: Vec<EventDoc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventDoc {
+    pub sample: u64,
+    pub action: MidiAction,
 }
 
 impl SongDoc {
@@ -123,6 +135,7 @@ impl SongDoc {
             sections: Vec::new(),
             markers: Vec::new(),
             timecode_start: None,
+            events: Vec::new(),
         }
     }
 }
@@ -230,6 +243,7 @@ pub struct Engine {
     current: Option<u64>,
     options: PerformOptions,
     voices: Option<(PathBuf, Voices)>,
+    midi: Option<rtrb::Consumer<MidiMessage>>,
 }
 
 /// A connected control handle and real-time mixer at `sample_rate`. The mixer goes to the device
@@ -238,6 +252,7 @@ pub fn new(sample_rate: u32) -> (Engine, Mixer) {
     let (command_tx, command_rx) = rtrb::RingBuffer::new(SCHEDULE_CAPACITY);
     let (garbage_tx, garbage_rx) = rtrb::RingBuffer::new(GARBAGE_CAPACITY);
     let (state_in, state_out) = triple_buffer::triple_buffer(&EngineState::new(sample_rate));
+    let (midi_tx, midi_rx) = rtrb::RingBuffer::new(MIDI_CAPACITY);
     let engine = Engine {
         sample_rate,
         commands: command_tx,
@@ -249,8 +264,9 @@ pub fn new(sample_rate: u32) -> (Engine, Mixer) {
         current: None,
         options: PerformOptions::default(),
         voices: None,
+        midi: Some(midi_rx),
     };
-    (engine, Mixer::new(sample_rate, command_rx, garbage_tx, state_in))
+    (engine, Mixer::new(sample_rate, command_rx, garbage_tx, state_in, midi_tx))
 }
 
 fn to_device(sample: u64, from: u32, to: u32) -> u64 {
@@ -263,6 +279,11 @@ fn to_device(sample: u64, from: u32, to: u32) -> u64 {
 impl Engine {
     pub fn sample_rate(&self) -> u32 {
         self.sample_rate
+    }
+
+    /// The queue of cue event messages the mixer fires, for the MIDI thread. Once.
+    pub fn take_midi(&mut self) -> Option<rtrb::Consumer<MidiMessage>> {
+        self.midi.take()
     }
 
     pub fn send(&mut self, command: Command) -> crate::Result<()> {
@@ -567,7 +588,15 @@ impl BuildJob {
             .map(|marker| Marker { at: to_device(marker.sample, doc.sample_rate, rate), action: marker.action })
             .collect();
         let count_in = click::count_in(&tempo, &options.click, rate).map(|(sampler, frames)| (Arc::new(sampler), frames));
-        let timeline = Timeline { tempo, sections, markers, count_in };
+        let events = doc
+            .events
+            .iter()
+            .flat_map(|event| {
+                let at = to_device(event.sample, doc.sample_rate, rate);
+                event.action.messages().into_iter().flatten().map(move |message| SongEvent { at, message })
+            })
+            .collect();
+        let timeline = Timeline { tempo, sections, markers, count_in, events };
         let song = Song::build(tag, specs, timeline)?;
         let info = SongInfo { tag, sample_rate: rate, length: song.length(), tracks, click_track, guide_track, timecode_track };
         Ok(Built { song, feeders, info, doc })
@@ -691,6 +720,7 @@ mod tests {
             sections: vec![SectionDoc { name: "Verse".into(), start_sample: 88_200, end_sample: 264_600 }],
             markers: vec![MarkerDoc { sample: 352_800, action: MarkerAction::Stop }],
             timecode_start: Some("03:00:00:00".into()),
+            events: vec![EventDoc { sample: 44_100, action: MidiAction::MidiNote { channel: 10, note: 36, velocity: 100 } }],
         };
         let (mut engine, _mixer) = new(48_000);
         let Built { song, info, .. } = engine.build_job(&doc).run().unwrap();
@@ -698,6 +728,14 @@ mod tests {
         assert_eq!(song.section_at(100_000), Some(Span { start: 96_000, end: 288_000 }));
         assert_eq!(song.timeline.markers, vec![Marker { at: 384_000, action: MarkerAction::Stop }]);
         // Click on every beat at 48 kHz.
+        // A cue event at one second: a note on and its note off, at the device rate.
+        assert_eq!(
+            song.timeline.events,
+            vec![
+                SongEvent { at: 48_000, message: MidiMessage::note_on(10, 36, 100) },
+                SongEvent { at: 48_000, message: MidiMessage::note_off(10, 36) },
+            ]
+        );
         // LTC starts at the song's own label, off by default.
         let Source::Timecode(ltc) = &song.tracks[info.timecode_track].source else { panic!("timecode track") };
         assert_eq!(ltc.timecode_at(0).to_string(), "03:00:00:00");

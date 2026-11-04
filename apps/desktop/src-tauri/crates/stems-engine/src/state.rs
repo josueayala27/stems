@@ -55,6 +55,8 @@ pub struct EngineState {
     pub deferred_commands: u64,
     /// Callback time over buffer time, 0–1+.
     pub cpu_load: f32,
+    /// Cue event messages lost because the MIDI queue was full.
+    pub dropped_events: u64,
     pub track_count: usize,
     /// Peak per track with a 300 ms release, linear, after the track fader.
     pub meters: [f32; MAX_TRACKS],
@@ -97,6 +99,7 @@ impl EngineState {
             underruns: 0,
             deferred_commands: 0,
             cpu_load: 0.0,
+            dropped_events: 0,
             track_count: 0,
             meters: [0.0; MAX_TRACKS],
             rms: [0.0; MAX_TRACKS],

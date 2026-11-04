@@ -3,6 +3,8 @@
 
 use std::sync::Arc;
 
+use stems_control::MidiMessage;
+
 use serde::{Deserialize, Serialize};
 
 use crate::meter::Meter;
@@ -125,6 +127,13 @@ pub struct Marker {
     pub action: MarkerAction,
 }
 
+/// A MIDI message at a song frame (a cue event).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SongEvent {
+    pub at: u64,
+    pub message: MidiMessage,
+}
+
 /// Everything about a song except its audio, at the device rate.
 #[derive(Debug, Clone)]
 pub struct Timeline {
@@ -132,11 +141,13 @@ pub struct Timeline {
     pub sections: Vec<Span>,
     pub markers: Vec<Marker>,
     pub count_in: Option<(Arc<Sampler>, u64)>,
+    /// Sorted by `at` (stable, so messages at one frame keep their order).
+    pub events: Vec<SongEvent>,
 }
 
 impl Timeline {
     pub fn plain(sample_rate: u32) -> Self {
-        Self { tempo: TempoMap::new(sample_rate, 120.0, 4, &[]), sections: Vec::new(), markers: Vec::new(), count_in: None }
+        Self { tempo: TempoMap::new(sample_rate, 120.0, 4, &[]), sections: Vec::new(), markers: Vec::new(), count_in: None, events: Vec::new() }
     }
 }
 
@@ -163,6 +174,7 @@ impl Song {
         timeline.sections.sort_by_key(|span| span.start);
         timeline.markers.retain(|marker| marker.action != MarkerAction::None && marker.at < length);
         timeline.markers.sort_by_key(|marker| marker.at);
+        timeline.events.sort_by_key(|event| event.at);
         Ok(Self { tag, tracks: specs.into_iter().map(Track::new).collect(), length, timeline })
     }
 

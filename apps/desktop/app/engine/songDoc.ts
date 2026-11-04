@@ -1,6 +1,23 @@
 import { busIndex } from '@stems/core'
 import type { Rig, Setlist, SetlistItem, Song } from '@stems/schema'
-import type { SongDoc, TransitionDoc } from './engine'
+import type { MidiAction, SongDoc, TransitionDoc } from './engine'
+
+/** The song's MIDI cue events at samples, sorted; marker anchors resolve to the marker. Unknown markers drop out. */
+export function cueEventDocs(song: Song): SongDoc['events'] {
+  const markers = new Map(song.markers.map((marker) => [marker.id, marker.sample]))
+  const events: SongDoc['events'] = []
+  for (const event of song.events) {
+    const sample = event.at.kind === 'sample' ? event.at.sample : markers.get(event.at.markerId)
+    if (sample === undefined) continue
+    const { action } = event
+    let midi: MidiAction | null = null
+    if (action.kind === 'midiProgram') midi = { kind: action.kind, channel: action.channel, program: action.program }
+    else if (action.kind === 'midiNote') midi = { kind: action.kind, channel: action.channel, note: action.note, velocity: action.velocity }
+    else if (action.kind === 'midiCc') midi = { kind: action.kind, channel: action.channel, controller: action.controller, value: action.value }
+    if (midi) events.push({ sample, action: midi })
+  }
+  return events.sort((a, b) => a.sample - b.sample)
+}
 
 /** The part of a song the engine needs to play it. Track buses are resolved by name in `rig`. */
 export function songDoc(song: Song, rig: Rig | null = null, timecodeStart: string | null = null): SongDoc {
@@ -21,6 +38,7 @@ export function songDoc(song: Song, rig: Rig | null = null, timecodeStart: strin
       .map((section) => ({ name: section.name, startSample: section.startSample, endSample: section.endSample })),
     markers: song.markers.map((marker) => ({ sample: marker.sample, action: marker.action })),
     timecodeStart,
+    events: cueEventDocs(song),
   }
 }
 

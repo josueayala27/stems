@@ -16,12 +16,17 @@ use crate::engine::{self, Built, Engine, PerformOptions, SongDoc, SongInfo, Tran
 use crate::mixer::Mixer;
 use crate::pad::Pad;
 use crate::routing::{Routing, RoutingDoc};
+use stems_control::midi::{self as midi_out, MidiOut};
+use stems_control::MidiMessage;
 use crate::state::EngineState;
 use crate::EngineError;
 
 const TICK: Duration = Duration::from_millis(16);
 const REOPEN_INTERVAL: Duration = Duration::from_secs(1);
 const MIXER_RETURN_TIMEOUT: Duration = Duration::from_secs(2);
+/// How often the MIDI thread looks for fired cue events. Events leave at most this late after
+/// the callback that crossed them.
+const MIDI_POLL: Duration = Duration::from_millis(1);
 
 type Reply<T> = mpsc::Sender<crate::Result<T>>;
 
@@ -42,6 +47,8 @@ enum Request {
     SetOptions(PerformOptions, Reply<()>),
     SetPad(Option<PathBuf>, Reply<()>),
     SetRouting(RoutingDoc, Reply<()>),
+    MidiPorts(Reply<Vec<String>>),
+    SetMidiOutput(Option<String>, Reply<()>),
     Command(Option<u64>, Transport, Reply<()>),
     State(Reply<Option<EngineState>>),
 }
@@ -106,6 +113,16 @@ impl EngineHost {
     }
 
     /// Send a transport command, at once or at a frame of the engine clock.
+    /// MIDI output ports (and the virtual `Stems` source on macOS).
+    pub fn midi_ports(&self) -> crate::Result<Vec<String>> {
+        self.call(Request::MidiPorts)
+    }
+
+    /// Send cue events to this MIDI port, or nowhere with `None`.
+    pub fn set_midi_output(&self, port: Option<String>) -> crate::Result<()> {
+        self.call(|reply| Request::SetMidiOutput(port, reply))
+    }
+
     /// The rig's buses and routing. Kept across device reopens.
     pub fn set_routing(&self, doc: RoutingDoc) -> crate::Result<()> {
         self.call(|reply| Request::SetRouting(doc, reply))
@@ -132,6 +149,7 @@ struct Control {
     pad: Option<PathBuf>,
     /// The rig's routing, sent again to a new mixer after a sample-rate change.
     routing: Option<RoutingDoc>,
+    midi: mpsc::Sender<MidiCommand>,
     mixer_home: mpsc::Sender<Mixer>,
     mixers: mpsc::Receiver<Mixer>,
     /// The mixer while no stream holds it.
@@ -161,6 +179,7 @@ impl Control {
             options: PerformOptions::default(),
             pad: None,
             routing: None,
+            midi: spawn_midi(),
             mixer_home,
             mixers,
             parked: None,
@@ -257,6 +276,19 @@ impl Control {
                 if result.is_ok() {
                     self.routing = Some(doc);
                 }
+                let _ = reply.send(result);
+            }
+            Request::MidiPorts(reply) => {
+                let _ = reply.send(midi_out::output_ports().map_err(|error| EngineError::Midi(error.to_string())));
+            }
+            Request::SetMidiOutput(port, reply) => {
+                let result = match port {
+                    None => Ok(None),
+                    Some(name) => MidiOut::connect(&name).map(Some).map_err(|error| EngineError::Midi(error.to_string())),
+                };
+                let result = result.map(|output| {
+                    let _ = self.midi.send(MidiCommand::Output(output));
+                });
                 let _ = reply.send(result);
             }
             Request::Command(at, transport, reply) => {
@@ -369,6 +401,9 @@ impl Control {
             _ => {
                 // A new rate needs a new mixer, and the songs decoded again at that rate.
                 let (mut engine, mixer) = engine::new(rate);
+                if let Some(events) = engine.take_midi() {
+                    let _ = self.midi.send(MidiCommand::Attach(events));
+                }
                 let _ = engine.set_options(self.options.clone());
                 if let Some(doc) = &self.routing {
                     if engine.set_routing(doc).is_err() {
@@ -424,6 +459,38 @@ impl Control {
             (self.on_state)(&state);
         }
     }
+}
+
+enum MidiCommand {
+    /// The fired-event queue of a new mixer.
+    Attach(rtrb::Consumer<MidiMessage>),
+    Output(Option<MidiOut>),
+}
+
+/// The MIDI thread: sends each fired cue event as soon as it sees it. Off the control thread, so
+/// a slow song load never delays MIDI.
+fn spawn_midi() -> mpsc::Sender<MidiCommand> {
+    let (sender, inbox) = mpsc::channel::<MidiCommand>();
+    let _ = thread::Builder::new().name("stems-midi".into()).spawn(move || {
+        let mut events: Option<rtrb::Consumer<MidiMessage>> = None;
+        let mut output: Option<MidiOut> = None;
+        loop {
+            match inbox.recv_timeout(MIDI_POLL) {
+                Ok(MidiCommand::Attach(queue)) => events = Some(queue),
+                Ok(MidiCommand::Output(port)) => output = port,
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
+            if let Some(queue) = events.as_mut() {
+                while let Ok(message) = queue.pop() {
+                    if let Some(port) = output.as_mut() {
+                        let _ = port.send(&message);
+                    }
+                }
+            }
+        }
+    });
+    sender
 }
 
 fn spawn_worker(work: impl FnOnce() + Send + 'static) {
