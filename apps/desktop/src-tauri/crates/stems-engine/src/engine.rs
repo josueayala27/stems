@@ -105,6 +105,10 @@ pub struct SongDoc {
     /// MIDI cue events, anchored to samples (the UI resolves marker anchors).
     #[serde(default)]
     pub events: Vec<EventDoc>,
+    /// The song's start point: audio before this file sample is skipped, so song frame 0 (bar 1)
+    /// is the first sound. Every other position in the document is relative to it.
+    #[serde(default)]
+    pub start_sample: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -136,6 +140,7 @@ impl SongDoc {
             markers: Vec::new(),
             timecode_start: None,
             events: Vec::new(),
+            start_sample: 0,
         }
     }
 }
@@ -513,11 +518,15 @@ impl BuildJob {
     /// the timeline.
     pub fn run(self) -> crate::Result<Built> {
         let BuildJob { tag, rate, doc, tempo, options, voices } = self;
+        // Cue points are file positions: song positions plus the start point, and the start itself.
+        let start = to_device(doc.start_sample, doc.sample_rate, rate);
         let mut cue_points: Vec<u64> = doc
             .sections
             .iter()
             .map(|section| to_device(section.start_sample, doc.sample_rate, rate))
             .chain(doc.markers.iter().map(|marker| to_device(marker.sample, doc.sample_rate, rate)))
+            .map(|at| at + start)
+            .chain(std::iter::once(start).filter(|&at| at > 0))
             .collect();
         cue_points.sort_unstable();
         cue_points.dedup();
@@ -542,11 +551,11 @@ impl BuildJob {
         let mut tracks = Vec::with_capacity(doc.tracks.len());
         for (track, result) in doc.tracks.iter().zip(opened) {
             let (source, feeder, info) = result?;
-            specs.push(TrackSpec { source: Source::Stream(source), role: track.kind, gain: track.gain, muted: track.mute, bus: track.bus });
+            specs.push(TrackSpec { source: Source::Stream(source), role: track.kind, gain: track.gain, muted: track.mute, bus: track.bus, offset: start });
             feeders.push(feeder);
             tracks.push(info);
         }
-        let length = tracks.iter().map(|track| track.frames).max().unwrap_or(0);
+        let length = tracks.iter().map(|track| track.frames).max().unwrap_or(0).saturating_sub(start);
         let (click, guide) = generated_tracks(&doc, &tempo, length, &options, &voices, rate);
         let click_track = specs.len();
         specs.push(TrackSpec {
@@ -555,6 +564,7 @@ impl BuildJob {
             gain: options.click.gain,
             muted: !options.click.enabled,
             bus: None,
+            offset: 0,
         });
         let guide_track = specs.len();
         specs.push(TrackSpec {
@@ -563,6 +573,7 @@ impl BuildJob {
             gain: options.guide.gain,
             muted: !options.guide.enabled,
             bus: None,
+            offset: 0,
         });
 
         let timecode_track = specs.len();
@@ -572,6 +583,7 @@ impl BuildJob {
             gain: options.timecode.gain,
             muted: !options.timecode.enabled,
             bus: None,
+            offset: 0,
         });
 
         let sections = doc

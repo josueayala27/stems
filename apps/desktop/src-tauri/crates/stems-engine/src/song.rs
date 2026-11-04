@@ -36,15 +36,17 @@ pub struct TrackSpec {
     pub muted: bool,
     /// Bus index in the rig. `None`, or a bus the rig lacks, plays into the role's bus.
     pub bus: Option<usize>,
+    /// Source frames skipped before song frame 0 (the song's start point). 0 for generated tracks.
+    pub offset: u64,
 }
 
 impl TrackSpec {
     pub fn stem(source: Source) -> Self {
-        Self { source, role: TrackRole::Stem, gain: 1.0, muted: false, bus: None }
+        Self { source, role: TrackRole::Stem, gain: 1.0, muted: false, bus: None, offset: 0 }
     }
 
     pub fn with_role(source: Source, role: TrackRole, gain: f32) -> Self {
-        Self { source, role, gain, muted: false, bus: None }
+        Self { source, role, gain, muted: false, bus: None, offset: 0 }
     }
 }
 
@@ -56,6 +58,7 @@ pub struct Track {
     pub(crate) muted: bool,
     pub(crate) soloed: bool,
     pub(crate) bus: Option<usize>,
+    pub(crate) offset: u64,
     pub(crate) ramp: Ramp,
     pub(crate) meter: Meter,
     /// The old position's audio during a jump crossfade.
@@ -73,10 +76,21 @@ impl Track {
             muted: spec.muted,
             soloed: false,
             bus: spec.bus,
+            offset: spec.offset,
             ramp: Ramp::new(start),
             meter: Meter::default(),
             fade: vec![0.0; MAX_FADE * CHANNELS].into_boxed_slice(),
         }
+    }
+
+    /// Read the frames that start at song frame `position` (source frame `position + offset`).
+    #[inline]
+    pub(crate) fn read(&mut self, position: u64, out: &mut [f32]) -> bool {
+        self.source.read(position + self.offset, out)
+    }
+
+    pub(crate) fn seek(&mut self, position: u64) {
+        self.source.seek(position + self.offset);
     }
 
     /// The bus this track plays into under `routing`. Timecode with no timecode bus plays
@@ -169,7 +183,7 @@ impl Song {
         if specs.len() > MAX_TRACKS {
             return Err(EngineError::TooManyTracks(specs.len()));
         }
-        let length = specs.iter().map(|spec| spec.source.frames()).max().unwrap_or(0);
+        let length = specs.iter().map(|spec| spec.source.frames().saturating_sub(spec.offset)).max().unwrap_or(0);
         timeline.sections.retain(|span| span.end > span.start);
         timeline.sections.sort_by_key(|span| span.start);
         timeline.markers.retain(|marker| marker.action != MarkerAction::None && marker.at < length);

@@ -120,7 +120,7 @@ fn mix_song(
         track.ramp.set(track.target(any_solo));
         if silent {
             scratch.fill(0.0);
-        } else if track.source.read(position, scratch) {
+        } else if track.read(position, scratch) {
             underruns += 1;
         }
         let timecode = track.role == TrackRole::Timecode;
@@ -458,7 +458,7 @@ impl Mixer {
                 match self.track_mut(track) {
                     Some(track) => {
                         let mut source = source;
-                        source.seek(position);
+                        source.seek(position + track.offset);
                         let old = std::mem::replace(&mut track.source, source);
                         self.retire(Garbage::Source(old));
                     }
@@ -508,7 +508,7 @@ impl Mixer {
         if self.position >= song.length {
             self.position = 0;
             self.next_marker = 0;
-            song.tracks.iter_mut().for_each(|track| track.source.seek(0));
+            song.tracks.iter_mut().for_each(|track| track.seek(0));
         }
         self.waiting = 0;
         self.jump.stopping = false;
@@ -524,7 +524,7 @@ impl Mixer {
         let Some(song) = self.song.as_deref_mut() else { return };
         self.position = position.min(song.length);
         let position = self.position;
-        song.tracks.iter_mut().for_each(|track| track.source.seek(position));
+        song.tracks.iter_mut().for_each(|track| track.seek(position));
         self.next_marker = song.timeline.markers.partition_point(|marker| marker.at < position);
     }
 
@@ -574,7 +574,8 @@ impl Mixer {
         if let Some(song) = self.song.as_deref_mut() {
             for track in &mut song.tracks {
                 // An underrun here only shortens the fade tail; it is not counted.
-                let _ = track.source.read(position, &mut track.fade[..frames * CHANNELS]);
+                let (source, fade, offset) = (&mut track.source, &mut track.fade, track.offset);
+                let _ = source.read(position + offset, &mut fade[..frames * CHANNELS]);
             }
         }
         self.jump = JumpFade { position: 0, len: frames, stopping: false };
