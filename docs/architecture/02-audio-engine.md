@@ -28,11 +28,17 @@ Commands reach the real-time thread through a lock-free SPSC queue. State leaves
 - Pads loop with a blended seam and crossfade over 2 s when the setlist reaches a song with another pad.
 - Guide voices are the user's WAV files (`verse.wav`, `2.wav`…). Stems ships none; `scripts/make-guide-voices.sh` makes a local set with macOS text-to-speech.
 
-## Tracks and routing
+## Tracks and routing (M4)
 
 - A song has N stem tracks plus generated click and guide tracks.
 - Each track has gain, mute, solo and an output bus.
 - Buses (for example `IEM`, `FOH`, `Click`) map to device channels in a routing matrix. Routing belongs to the rig, not the song.
+- `routing.rs` holds up to 16 buses, each with a gain, a mute and up to 8 device channels. The mixer sums every track into its bus, then each bus goes through its fader (ramped like track gains) to its channels. Buses that share a channel add up.
+- Fold rules: channels the device lacks are dropped; the rest pair up as left and right in order; a last odd channel gets `0.5 * (left + right)`. `@stems/core` `channelTargets` runs the same rules for the UI.
+- A track names its bus by index (`TrackDoc.bus`, resolved from `Track.defaultBus` by name in the UI). With none, or one the rig lacks, it plays into its role's bus: the rig's stem, click or guide bus. Pads play into the pad bus.
+- The routing table goes to the mixer boxed (`SetRouting`) and the old one comes back as garbage. Bus fader and mute moves are commands (`BusGain`, `BusMute`). The control thread keeps the last routing and sends it again to a new mixer after a sample-rate change.
+- Meters: peak (300 ms release) and RMS (300 ms average) per track and per bus, after the fader (`meter.rs`). The real-time thread settles them each callback and publishes them through the state triple buffer; the UI reads them at about 60 Hz.
+- Safety: the UI warns when the click or guide bus, or a click or guide track, plays into a bus marked front of house, or shares an output with one (`routingWarnings`).
 
 ## Tempo and key
 

@@ -14,7 +14,9 @@ Song {
 Track { id, name, file, hash, kind: stem | click | guide, gain, mute, color, defaultBus }
 Section { id, name, startSample, endSample, color, loopable }
 Setlist { id, name, items: { songId, transition: stop | auto | crossfade, preWaitMs, padId | null }[] }
-Rig { id, name, device, sampleRate, bufferSize, buses: Bus[], routing: { bus, channels[] }[] }
+Rig { id, name, device, deviceId, sampleRate | null, bufferSize, buses: Bus[], routing: { bus, channels[] }[],
+      clickBus, guideBus, padBus }   per machine; the current rig id lives in localStorage
+Bus { id, name, color, gain, mute, foh }   foh: the audience hears it, so click and guide must not
 ```
 
 Media files stay on disk. The database stores paths and hashes and relinks missing files by hash.

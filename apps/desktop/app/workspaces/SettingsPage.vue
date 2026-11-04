@@ -1,18 +1,68 @@
 <script setup lang="ts">
+import { addBus, removeBus, renameBus, routingWarnings, updateBus } from '@stems/core'
+import type { Rig } from '@stems/schema'
 import { css } from 'styled-system/css'
-import { ref } from 'vue'
-import { Badge, Button, PropertyRow, Select, Slider, Switch, type SelectOption } from '~/ui'
+import { computed, onMounted, ref } from 'vue'
+import { Badge, Button, IconButton, Input, PropertyRow, Select, Slider, Switch, type SelectOption } from '~/ui'
 import { pickPaths } from '~/data/library'
 import type { ClickSound } from '~/engine/engine'
 import { usePerformOptions } from '~/engine/options'
+import { usePlayer } from '~/engine/player'
 import { fileName } from './songs/format'
 import PageHeader from '~/shell/PageHeader.vue'
 import LibraryLayout from './LibraryLayout.vue'
 
-const sampleRate = ref(48_000)
-const bufferSize = ref(128)
-const sampleRates: SelectOption<number>[] = [44_100, 48_000, 96_000].map((value) => ({ value, label: `${value / 1000} kHz` }))
-const bufferSizes: SelectOption<number>[] = [64, 128, 256, 512].map((value) => ({ value, label: `${value} samples` }))
+const player = usePlayer()
+const rig = computed(() => player.rig.value)
+const output = computed(() => player.output.value)
+onMounted(() => void player.refreshDevices())
+
+/** The engine's default-device id stands in for `deviceId: null`. */
+const DEFAULT_DEVICE = ''
+const deviceOptions = computed<SelectOption<string>[]>(() => [
+  { value: DEFAULT_DEVICE, label: 'System default output' },
+  ...player.devices.value.map((device) => ({ value: device.id, label: `${device.name} · ${device.channels} out` })),
+])
+const selectedDevice = computed(() => {
+  const id = rig.value?.deviceId
+  return player.devices.value.find((device) => (id ? device.id === id : device.isDefault)) ?? null
+})
+/** 0 stands for the device's default rate. */
+const rateOptions = computed<SelectOption<number>[]>(() => [
+  { value: 0, label: selectedDevice.value?.defaultSampleRate ? `Device default (${selectedDevice.value.defaultSampleRate / 1000} kHz)` : 'Device default' },
+  ...(selectedDevice.value?.sampleRates ?? [44_100, 48_000, 96_000]).map((value) => ({ value, label: `${value / 1000} kHz` })),
+])
+const BUFFERS = [64, 128, 256, 512, 1024] as const
+const bufferOptions = computed<SelectOption<number>[]>(() =>
+  BUFFERS.filter((value) => {
+    const device = selectedDevice.value
+    return (!device?.minBuffer || value >= device.minBuffer) && (!device?.maxBuffer || value <= device.maxBuffer)
+  }).map((value) => ({ value, label: `${value} samples · ${((value / (output.value?.sampleRate || 48_000)) * 1000).toFixed(1)} ms` })),
+)
+
+function apply(next: Rig) {
+  void player.applyRig(next)
+}
+function chooseDevice(id: string | undefined) {
+  const current = rig.value
+  if (!current || id === undefined) return
+  const device = player.devices.value.find((entry) => entry.id === id)
+  apply({ ...current, deviceId: id === DEFAULT_DEVICE ? null : id, device: device?.name ?? '' })
+}
+function chooseRate(rate: number | undefined) {
+  if (rig.value && rate !== undefined) apply({ ...rig.value, sampleRate: rate === 0 ? null : rate })
+}
+function chooseBuffer(size: number | undefined) {
+  if (rig.value && size !== undefined) apply({ ...rig.value, bufferSize: size as Rig['bufferSize'] })
+}
+
+const rigOptions = computed<SelectOption<string>[]>(() => player.rigs.value.map((entry) => ({ value: entry.id, label: entry.name })))
+const busNames = computed<SelectOption<string>[]>(() => rig.value?.buses.map((bus) => ({ value: bus.name, label: bus.name })) ?? [])
+const warnings = computed(() => (rig.value ? routingWarnings(rig.value, output.value?.channels) : []))
+function edit(change: (current: Rig) => Rig) {
+  if (rig.value) apply(change(rig.value))
+}
+
 const options = usePerformOptions()
 const sounds: SelectOption<ClickSound>[] = [
   { value: 'beep', label: 'Beep' },
@@ -39,6 +89,9 @@ const card = css({ display: 'flex', flexDirection: 'column', gap: '3', p: '4', b
 const cardHeader = css({ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '2' })
 const cardTitle = css({ textStyle: 'ui.title', color: 'fg.default' })
 const hint = css({ textStyle: 'ui.sm', color: 'fg.muted' })
+const danger = css({ textStyle: 'ui.sm', color: 'danger.default' })
+const busList = css({ display: 'flex', flexDirection: 'column', gap: '2', alignItems: 'flex-start' })
+const busRow = css({ display: 'grid', gridTemplateColumns: '[1fr auto auto auto]', alignItems: 'center', gap: '2', w: 'full' })
 </script>
 
 <template>
@@ -48,11 +101,23 @@ const hint = css({ textStyle: 'ui.sm', color: 'fg.muted' })
       <section :class="card" aria-labelledby="settings-audio">
         <div :class="cardHeader">
           <h2 id="settings-audio" :class="cardTitle">Audio device</h2>
-          <Badge tone="warning" dot label="Not connected" />
+          <Badge v-if="output" tone="success" dot :label="`${output.channels} out · ${output.sampleRate / 1000} kHz · ${output.bufferSize}`" />
+          <Badge v-else tone="warning" dot label="Not connected" />
         </div>
-        <PropertyRow label="Device"><Select :options="[]" placeholder="No devices found" disabled aria-label="Audio device" /></PropertyRow>
-        <PropertyRow label="Sample rate"><Select v-model="sampleRate" :options="sampleRates" disabled aria-label="Sample rate" /></PropertyRow>
-        <PropertyRow label="Buffer"><Select v-model="bufferSize" :options="bufferSizes" disabled aria-label="Buffer size" /></PropertyRow>
+        <PropertyRow label="Device">
+          <Select :model-value="rig?.deviceId ?? DEFAULT_DEVICE" :options="deviceOptions" :disabled="!rig" aria-label="Audio device" @update:model-value="chooseDevice" />
+        </PropertyRow>
+        <PropertyRow label="Sample rate">
+          <Select :model-value="rig?.sampleRate ?? 0" :options="rateOptions" :disabled="!rig" aria-label="Sample rate" @update:model-value="chooseRate" />
+        </PropertyRow>
+        <PropertyRow label="Buffer">
+          <Select :model-value="rig?.bufferSize" :options="bufferOptions" :disabled="!rig" aria-label="Buffer size" @update:model-value="chooseBuffer" />
+        </PropertyRow>
+        <p v-if="player.error.value" :class="hint">{{ player.error.value }}</p>
+        <p :class="hint">
+          To play through several interfaces as one, combine them in Audio MIDI Setup: click +, choose Create Aggregate Device and tick each interface.
+          It shows up here as one device with all of their outputs. Turn on drift correction for every interface except the clock source.
+        </p>
       </section>
       <section :class="card" aria-labelledby="settings-click">
         <div :class="cardHeader">
@@ -87,9 +152,38 @@ const hint = css({ textStyle: 'ui.sm', color: 'fg.muted' })
         </p>
       </section>
       <section :class="card" aria-labelledby="settings-rig">
-        <div :class="cardHeader"><h2 id="settings-rig" :class="cardTitle">Rig</h2></div>
-        <p :class="hint">Buses and their output channels. Routing belongs to the rig, so every song plays through the same outputs.</p>
-        <PropertyRow label="Rig"><Select :options="[]" placeholder="No rigs" disabled aria-label="Rig" /></PropertyRow>
+        <div :class="cardHeader">
+          <h2 id="settings-rig" :class="cardTitle">Rig</h2>
+          <Button size="sm" icon="lucide:plus" :disabled="!output" @click="player.newRig()">New rig</Button>
+        </div>
+        <p :class="hint">Buses and their output channels, saved on this machine. Routing belongs to the rig, so every song plays through the same outputs. Map channels in the Mixer.</p>
+        <PropertyRow label="Rig">
+          <Select :model-value="rig?.id" :options="rigOptions" placeholder="No rigs" :disabled="!rig" aria-label="Rig" @update:model-value="(id: string | undefined) => id && player.selectRig(id)" />
+        </PropertyRow>
+        <template v-if="rig">
+          <PropertyRow label="Name">
+            <Input :model-value="rig.name" aria-label="Rig name" @update:model-value="(name: string) => name.trim() && edit((current) => ({ ...current, name: name.trim() }))" />
+          </PropertyRow>
+          <div :class="busList">
+            <div v-for="bus in rig.buses" :key="bus.id" :class="busRow">
+              <Input :model-value="bus.name" size="sm" :aria-label="`Bus ${bus.name} name`" @update:model-value="(name: string) => edit((current) => renameBus(current, bus.name, name))" />
+              <Switch :model-value="bus.foh" size="sm" :aria-label="`${bus.name} is front of house`" @update:model-value="(foh: boolean) => edit((current) => updateBus(current, bus.name, { foh }))" />
+              <span :class="hint">FOH</span>
+              <IconButton icon="lucide:trash-2" :label="`Remove ${bus.name}`" size="sm" :disabled="rig.buses.length <= 1" @click="edit((current) => removeBus(current, bus.name))" />
+            </div>
+            <Button size="sm" icon="lucide:plus" :disabled="rig.buses.length >= 16" @click="edit((current) => addBus(current))">Add bus</Button>
+          </div>
+          <PropertyRow label="Click bus">
+            <Select :model-value="rig.clickBus" :options="busNames" aria-label="Click bus" @update:model-value="(name: string | undefined) => name && edit((current) => ({ ...current, clickBus: name }))" />
+          </PropertyRow>
+          <PropertyRow label="Guide bus">
+            <Select :model-value="rig.guideBus" :options="busNames" aria-label="Guide bus" @update:model-value="(name: string | undefined) => name && edit((current) => ({ ...current, guideBus: name }))" />
+          </PropertyRow>
+          <PropertyRow label="Pad bus">
+            <Select :model-value="rig.padBus" :options="busNames" aria-label="Pad bus" @update:model-value="(name: string | undefined) => name && edit((current) => ({ ...current, padBus: name }))" />
+          </PropertyRow>
+          <p v-for="warning in warnings" :key="warning.message" :class="danger" role="alert">{{ warning.message }}</p>
+        </template>
       </section>
       <section :class="card" aria-labelledby="settings-midi">
         <div :class="cardHeader"><h2 id="settings-midi" :class="cardTitle">MIDI</h2></div>
