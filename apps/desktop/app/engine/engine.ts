@@ -45,9 +45,10 @@ export interface SongInfo {
   sampleRate: number
   length: number
   tracks: TrackInfo[]
-  /** Engine track indexes of the generated click and guide, after the audio tracks. */
+  /** Engine track indexes of the generated click, guide and timecode, after the audio tracks. */
   clickTrack: number
   guideTrack: number
+  timecodeTrack: number
 }
 
 export type Quantize = 'now' | 'beat' | 'bar' | 'section' | 'end'
@@ -83,6 +84,8 @@ export interface SongDoc {
   tracks: { file: string; kind: 'stem' | 'click' | 'guide'; gain: number; mute: boolean; bus: number | null }[]
   sections: { name: string; startSample: number; endSample: number }[]
   markers: { sample: number; action: 'none' | 'stop' | 'loop' | 'next' }[]
+  /** LTC label at the song start, `HH:MM:SS:FF`; `null` uses the timecode options' start. */
+  timecodeStart: string | null
 }
 
 export interface TransitionDoc {
@@ -93,9 +96,24 @@ export interface TransitionDoc {
 
 export type ClickSound = 'beep' | 'tick' | 'wood'
 
+/** SMPTE rates, named as Lumen names them. */
+export type FrameRate = '23.976' | '24' | '25' | '29.97' | '29.97df' | '30'
+
+export interface TimecodeOptions {
+  /** LTC out on the rig's timecode bus. */
+  enabled: boolean
+  rate: FrameRate
+  /** Label at each song start, `HH:MM:SS:FF`. */
+  start: string
+  /** In a setlist, song n starts at n:00:00:00 instead (UI only; sent as each song's `timecodeStart`). */
+  hourPerSong: boolean
+  gain: number
+}
+
 export interface PerformOptions {
   click: { enabled: boolean; sound: ClickSound; subdivisions: number; countInBars: number; gain: number }
   guide: { enabled: boolean; voices: string | null; gain: number; count: boolean }
+  timecode: TimecodeOptions
 }
 
 /** The `engine://state` payload, about 60 times a second. */

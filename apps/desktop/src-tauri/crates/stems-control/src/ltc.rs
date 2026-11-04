@@ -119,99 +119,102 @@ impl LtcGenerator {
     }
 }
 
+/// A SMPTE 12M LTC decoder, for tests and loopback checks. The transition logic is Lumen's
+/// (`lumen-control/src/ltc.rs`: Schmitt trigger, half and full cells, an 80-bit window that
+/// finds the sync word) with two fixes: the cell period is a frame over 80, and fields are
+/// read at their SMPTE bit positions instead of as packed bytes.
+pub struct LtcDecoder {
+    sample_rate: f64,
+    rate: FrameRate,
+    index: u64,
+    polarity: Option<bool>,
+    last_transition: Option<u64>,
+    pending_half: bool,
+    window: std::collections::VecDeque<bool>,
+}
+
+impl LtcDecoder {
+    pub fn new(sample_rate: f64, rate: FrameRate) -> Self {
+        Self { sample_rate, rate, index: 0, polarity: None, last_transition: None, pending_half: false, window: std::collections::VecDeque::with_capacity(FRAME_BITS) }
+    }
+
+    /// Feed one mono sample; returns a timecode when a frame completes.
+    pub fn push_sample(&mut self, sample: f32) -> Option<Timecode> {
+        let threshold = 0.02;
+        let polarity = if sample >= threshold {
+            Some(true)
+        } else if sample <= -threshold {
+            Some(false)
+        } else {
+            self.polarity
+        };
+        let output = match (self.polarity, polarity) {
+            (Some(previous), Some(current)) if previous != current => self.transition(self.index),
+            _ => None,
+        };
+        self.polarity = polarity;
+        self.index += 1;
+        output
+    }
+
+    fn transition(&mut self, at: u64) -> Option<Timecode> {
+        let last = self.last_transition.replace(at)?;
+        let delta = (at - last) as f64;
+        let period = self.sample_rate / self.rate.actual_fps() / FRAME_BITS as f64;
+        let bit = if delta < period * 0.75 {
+            if self.pending_half {
+                self.pending_half = false;
+                true
+            } else {
+                self.pending_half = true;
+                return None;
+            }
+        } else if delta <= period * 1.5 {
+            self.pending_half = false;
+            false
+        } else {
+            self.pending_half = false;
+            return None;
+        };
+        self.push_bit(bit)
+    }
+
+    fn push_bit(&mut self, bit: bool) -> Option<Timecode> {
+        self.window.push_back(bit);
+        if self.window.len() > FRAME_BITS {
+            self.window.pop_front();
+        }
+        if self.window.len() < FRAME_BITS {
+            return None;
+        }
+        let field = |start: usize, width: usize| (0..width).fold(0u8, |value, i| value | (u8::from(self.window[start + i]) << i));
+        if u16::from(field(64, 8)) | (u16::from(field(72, 8)) << 8) != SYNC_WORD {
+            return None;
+        }
+        let rate = if self.window[10] { FrameRate::Fps29_97Drop } else { self.rate };
+        let timecode = Timecode::new(
+            field(48, 4) + 10 * field(56, 2),
+            field(32, 4) + 10 * field(40, 3),
+            field(16, 4) + 10 * field(24, 3),
+            field(0, 4) + 10 * field(8, 2),
+            rate,
+        )
+        .ok();
+        self.window.clear();
+        timecode
+    }
+}
+
+/// Every timecode `samples` carries.
+pub fn decode(samples: &[f32], sample_rate: u32, rate: FrameRate) -> Vec<Timecode> {
+    let mut decoder = LtcDecoder::new(f64::from(sample_rate), rate);
+    samples.iter().filter_map(|&sample| decoder.push_sample(sample)).collect()
+}
+
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
 
-    /// A SMPTE 12M LTC decoder for the tests. The transition logic is Lumen's
-    /// (`lumen-control/src/ltc.rs`: Schmitt trigger, half and full cells, an 80-bit window that
-    /// finds the sync word) with two fixes: the cell period is a frame over 80, and fields are
-    /// read at their SMPTE bit positions instead of as packed bytes.
-    pub(crate) struct SmpteDecoder {
-        sample_rate: f64,
-        rate: FrameRate,
-        index: u64,
-        polarity: Option<bool>,
-        last_transition: Option<u64>,
-        pending_half: bool,
-        window: std::collections::VecDeque<bool>,
-    }
-
-    impl SmpteDecoder {
-        pub(crate) fn new(sample_rate: f64, rate: FrameRate) -> Self {
-            Self { sample_rate, rate, index: 0, polarity: None, last_transition: None, pending_half: false, window: Default::default() }
-        }
-
-        pub(crate) fn push_sample(&mut self, sample: f32) -> Option<Timecode> {
-            let threshold = 0.02;
-            let polarity = if sample >= threshold {
-                Some(true)
-            } else if sample <= -threshold {
-                Some(false)
-            } else {
-                self.polarity
-            };
-            let output = match (self.polarity, polarity) {
-                (Some(previous), Some(current)) if previous != current => self.transition(self.index),
-                _ => None,
-            };
-            self.polarity = polarity;
-            self.index += 1;
-            output
-        }
-
-        fn transition(&mut self, at: u64) -> Option<Timecode> {
-            let last = self.last_transition.replace(at)?;
-            let delta = (at - last) as f64;
-            let period = self.sample_rate / self.rate.actual_fps() / FRAME_BITS as f64;
-            let bit = if delta < period * 0.75 {
-                if self.pending_half {
-                    self.pending_half = false;
-                    true
-                } else {
-                    self.pending_half = true;
-                    return None;
-                }
-            } else if delta <= period * 1.5 {
-                self.pending_half = false;
-                false
-            } else {
-                self.pending_half = false;
-                return None;
-            };
-            self.push_bit(bit)
-        }
-
-        fn push_bit(&mut self, bit: bool) -> Option<Timecode> {
-            self.window.push_back(bit);
-            if self.window.len() > FRAME_BITS {
-                self.window.pop_front();
-            }
-            if self.window.len() < FRAME_BITS {
-                return None;
-            }
-            let field = |start: usize, width: usize| (0..width).fold(0u8, |value, i| value | (u8::from(self.window[start + i]) << i));
-            if u16::from(field(64, 8)) | (u16::from(field(72, 8)) << 8) != SYNC_WORD {
-                return None;
-            }
-            let rate = if self.window[10] { FrameRate::Fps29_97Drop } else { self.rate };
-            let timecode = Timecode::new(
-                field(48, 4) + 10 * field(56, 2),
-                field(32, 4) + 10 * field(40, 3),
-                field(16, 4) + 10 * field(24, 3),
-                field(0, 4) + 10 * field(8, 2),
-                rate,
-            )
-            .ok();
-            self.window.clear();
-            timecode
-        }
-    }
-
-    pub(crate) fn decode(samples: &[f32], sample_rate: u32, rate: FrameRate) -> Vec<Timecode> {
-        let mut decoder = SmpteDecoder::new(f64::from(sample_rate), rate);
-        samples.iter().filter_map(|&sample| decoder.push_sample(sample)).collect()
-    }
 
     fn render(rate: FrameRate, start: &str, sample_rate: u32, seconds: f64) -> Vec<f32> {
         let start = Timecode::parse(start, rate).unwrap();

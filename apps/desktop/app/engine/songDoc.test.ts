@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { defaultRig } from '@stems/core'
 import { rigSchema, setlistSchema } from '@stems/schema'
 import { songFromImport } from '~/data/importSong'
-import { readOptions, DEFAULT_OPTIONS } from './options'
+import { readOptions, DEFAULT_OPTIONS, songHour, validTimecode } from './options'
 import { fromEngine, padAt, songDoc, toEngine, transitionDoc } from './songDoc'
 
 const song = {
@@ -68,5 +68,26 @@ describe('readOptions', () => {
     expect(readOptions(null)).toEqual(DEFAULT_OPTIONS)
     expect(readOptions('{"click":{"gain":0.5}}').click).toEqual({ ...DEFAULT_OPTIONS.click, gain: 0.5 })
     expect(readOptions('not json')).toEqual(DEFAULT_OPTIONS)
+  })
+})
+
+describe('timecode options', () => {
+  it('validates labels for the rate, including dropped labels', () => {
+    expect(validTimecode('01:00:00:00', '30')).toBe(true)
+    expect(validTimecode('01:00:00:25', '25')).toBe(false)
+    expect(validTimecode('00:01:00;00', '29.97df')).toBe(false)
+    expect(validTimecode('00:10:00;00', '29.97df')).toBe(true)
+    expect(validTimecode('1:00:00:00', '30')).toBe(false)
+  })
+
+  it('gives setlist song n the hour n, capped at 23', () => {
+    expect(songHour(0)).toBe('01:00:00:00')
+    expect(songHour(40)).toBe('23:00:00:00')
+  })
+
+  it('fills new timecode fields from the defaults and sends the song start', () => {
+    expect(readOptions('{"click":{"gain":0.5}}').timecode).toEqual(DEFAULT_OPTIONS.timecode)
+    expect(songDoc(song, null, '03:00:00:00').timecodeStart).toBe('03:00:00:00')
+    expect(songDoc(song).timecodeStart).toBeNull()
   })
 })

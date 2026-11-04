@@ -1422,6 +1422,7 @@ mod tests {
             click_bus: 1,
             guide_bus: 1,
             pad_bus: 0,
+            timecode_bus: None,
         };
         Box::new(Routing::from_doc(&doc).unwrap())
     }
@@ -1521,5 +1522,68 @@ mod tests {
         let last = &out[(fade + 255) * 16..(fade + 256) * 16];
         assert!(last[4] > 0.5);
         assert_eq!(last[0], 0.0);
+    }
+
+    // ── M5 timecode ──────────────────────────────────────────────────────────────────────
+
+    fn ltc_song(timecode_bus: Option<usize>) -> (Engine, Mixer) {
+        use stems_control::{FrameRate, LtcGenerator, Timecode};
+        let (mut engine, mixer) = engine::new(RATE);
+        let mut routing = *tour_routing();
+        routing.roles.timecode = timecode_bus;
+        let length = 10 * u64::from(RATE);
+        let start = Timecode::parse("02:00:00:00", FrameRate::Fps25).unwrap();
+        let ltc = LtcGenerator::new(FrameRate::Fps25, start, RATE, length);
+        let specs = vec![
+            TrackSpec::stem(Source::memory(vec![0.5; length as usize * CHANNELS])),
+            TrackSpec::with_role(Source::Timecode(Arc::new(ltc)), TrackRole::Timecode, 0.25),
+        ];
+        engine.send(Command::SetRouting(Box::new(routing))).unwrap();
+        engine.send(Command::LoadSong(Box::new(Song::build(1, specs, Timeline::plain(RATE)).unwrap()))).unwrap();
+        (engine, mixer)
+    }
+
+    fn channel(out: &[f32], channels: usize, index: usize) -> Vec<f32> {
+        out.chunks_exact(channels).map(|frame| frame[index]).collect()
+    }
+
+    #[test]
+    fn ltc_plays_on_its_bus_only_and_decodes_from_the_song_start() {
+        use stems_control::{ltc, FrameRate};
+        let (mut engine, mut mixer) = ltc_song(Some(2));
+        engine.send(Command::Play).unwrap();
+        let out = render_device(&mut mixer, RATE as usize, 16);
+        // The Click bus on output 5 carries LTC at the track level and nothing else.
+        let wire = channel(&out, 16, 4);
+        assert!(wire[RAMP_FRAMES as usize..].iter().all(|&s| s.abs() == 0.25));
+        assert!(channel(&out, 16, 0).iter().all(|&s| s == 0.5));
+        let decoded = ltc::decode(&wire, RATE, FrameRate::Fps25);
+        assert!(decoded.len() >= 23);
+        assert_eq!(decoded[0].to_string(), "02:00:00:01");
+        assert_eq!(decoded.last().unwrap().to_string(), format!("02:00:00:{:02}", decoded.len()));
+    }
+
+    #[test]
+    fn ltc_follows_a_jump_without_a_crossfade() {
+        use stems_control::{ltc, FrameRate};
+        let (mut engine, mut mixer) = ltc_song(Some(2));
+        engine.send(Command::Play).unwrap();
+        render_device(&mut mixer, 24_000, 16);
+        engine.send(Command::Seek(5 * u64::from(RATE))).unwrap();
+        let out = render_device(&mut mixer, 24_000, 16);
+        let wire = channel(&out, 16, 4);
+        // No blend of old and new timecode: every sample is a full-level LTC sample.
+        assert!(wire.iter().all(|&s| s.abs() == 0.25));
+        let decoded = ltc::decode(&wire, RATE, FrameRate::Fps25);
+        assert_eq!(decoded[0].to_string(), "02:00:05:01");
+    }
+
+    #[test]
+    fn ltc_with_no_timecode_bus_plays_nowhere() {
+        let (mut engine, mut mixer) = ltc_song(None);
+        engine.send(Command::Play).unwrap();
+        let out = render_device(&mut mixer, 4_800, 16);
+        assert!(out.chunks_exact(16).all(|frame| frame[0] == 0.5 && frame[1] == 0.5 && frame[2..].iter().all(|&s| s == 0.0)));
+        assert_eq!(engine.state().track_buses[1], u8::MAX);
     }
 }

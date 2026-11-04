@@ -17,7 +17,7 @@ import {
   type Quantize,
   type Transport,
 } from './engine'
-import { onOptionsChange, usePerformOptions } from './options'
+import { onOptionsChange, snapshotOptions, songHour, usePerformOptions } from './options'
 import { padAt, songDoc, toEngine, transitionDoc } from './songDoc'
 
 /** Buffer for the default output before a rig exists. */
@@ -160,7 +160,7 @@ async function prepareFollowing() {
   const item = list?.items[following]
   const target = songs.value[following]
   if (list && item && target) {
-    const info = await engine.prepareNext(songDoc(target, rig.value), transitionDoc(item))
+    const info = await engine.prepareNext(songDoc(target, rig.value, timecodeStart(following)), transitionDoc(item))
     tags.set(info.tag, following)
     nextIndex.value = following
   } else {
@@ -231,7 +231,7 @@ async function ensureOutput(): Promise<OpenedOutput> {
   rig.value = current
   await engine.setRouting(routingDoc(current))
   const options = usePerformOptions()
-  await engine.setOptions(structuredClone({ click: { ...options.click }, guide: { ...options.guide } }))
+  await engine.setOptions(snapshotOptions(options))
   return output.value
 }
 
@@ -243,7 +243,7 @@ async function loadAt(at: number): Promise<void> {
   await run(async () => {
     await listenOnce()
     await ensureOutput()
-    const info = await engine.loadSong(songDoc(target, rig.value))
+    const info = await engine.loadSong(songDoc(target, rig.value, timecodeStart(at)))
     tags.set(info.tag, at)
     lastTag = info.tag
     index.value = at
@@ -255,6 +255,11 @@ async function loadAt(at: number): Promise<void> {
 }
 
 const send = (command: Transport) => run(() => engine.command(command))
+
+/** The LTC start for the song at `at` in the queue: its hour in a setlist with one hour per song. */
+function timecodeStart(at: number): string | null {
+  return setlist.value && usePerformOptions().timecode.hourPerSong ? songHour(at) : null
+}
 
 /** Send every loaded track its bus again, after buses were added, removed, renamed or reordered. */
 async function resyncTrackBuses() {

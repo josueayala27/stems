@@ -664,7 +664,7 @@ mod tests {
         assert_eq!(info.length, 9_000);
         assert_eq!(info.tracks[0].channels, 1);
         assert_eq!(info.tracks[1].frames, 6_000);
-        assert_eq!((info.click_track, info.guide_track), (2, 3));
+        assert_eq!((info.click_track, info.guide_track, info.timecode_track), (2, 3, 4));
         engine.send(Command::Play).unwrap();
         let out = mixer.render(9_000);
 
@@ -690,6 +690,7 @@ mod tests {
             tracks: vec![TrackDoc { file: dir.join("keys.wav"), kind: TrackRole::Stem, gain: 1.0, mute: false, bus: None }],
             sections: vec![SectionDoc { name: "Verse".into(), start_sample: 88_200, end_sample: 264_600 }],
             markers: vec![MarkerDoc { sample: 352_800, action: MarkerAction::Stop }],
+            timecode_start: Some("03:00:00:00".into()),
         };
         let (mut engine, _mixer) = new(48_000);
         let Built { song, info, .. } = engine.build_job(&doc).run().unwrap();
@@ -697,6 +698,10 @@ mod tests {
         assert_eq!(song.section_at(100_000), Some(Span { start: 96_000, end: 288_000 }));
         assert_eq!(song.timeline.markers, vec![Marker { at: 384_000, action: MarkerAction::Stop }]);
         // Click on every beat at 48 kHz.
+        // LTC starts at the song's own label, off by default.
+        let Source::Timecode(ltc) = &song.tracks[info.timecode_track].source else { panic!("timecode track") };
+        assert_eq!(ltc.timecode_at(0).to_string(), "03:00:00:00");
+        assert!(song.tracks[info.timecode_track].muted);
         let Source::Sampler(click) = &song.tracks[info.click_track].source else { panic!("click is a sampler") };
         assert_eq!(click.hits()[1].at, 24_000);
     }

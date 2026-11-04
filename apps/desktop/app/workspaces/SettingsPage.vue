@@ -5,8 +5,8 @@ import { css } from 'styled-system/css'
 import { computed, onMounted, ref } from 'vue'
 import { Badge, Button, IconButton, Input, PropertyRow, Select, Slider, Switch, type SelectOption } from '~/ui'
 import { pickPaths } from '~/data/library'
-import type { ClickSound } from '~/engine/engine'
-import { usePerformOptions } from '~/engine/options'
+import type { ClickSound, FrameRate } from '~/engine/engine'
+import { usePerformOptions, validTimecode } from '~/engine/options'
 import { usePlayer } from '~/engine/player'
 import { fileName } from './songs/format'
 import PageHeader from '~/shell/PageHeader.vue'
@@ -81,8 +81,27 @@ async function chooseVoices() {
   if (folder) options.guide.voices = folder
 }
 const link = ref(false)
-const ltc = ref(false)
 const mtc = ref(false)
+
+const frameRates: SelectOption<FrameRate>[] = [
+  { value: '23.976', label: '23.976 fps' },
+  { value: '24', label: '24 fps' },
+  { value: '25', label: '25 fps' },
+  { value: '29.97', label: '29.97 fps' },
+  { value: '29.97df', label: '29.97 drop-frame' },
+  { value: '30', label: '30 fps' },
+]
+/** The empty value stands for "no timecode bus". */
+const NO_BUS = ''
+const timecodeBuses = computed<SelectOption<string>[]>(() => [{ value: NO_BUS, label: 'None (LTC off)' }, ...busNames.value])
+const startInvalid = ref(false)
+function setStart(text: string) {
+  startInvalid.value = !validTimecode(text, options.timecode.rate)
+  if (!startInvalid.value) options.timecode.start = text.trim()
+}
+function setTimecodeBus(name: string | undefined) {
+  if (name !== undefined) edit((current) => ({ ...current, timecodeBus: name === NO_BUS ? null : name }))
+}
 
 const grid = css({ display: 'grid', gridTemplateColumns: '[repeat(auto-fill, minmax(360px, 1fr))]', gap: '4' })
 const card = css({ display: 'flex', flexDirection: 'column', gap: '3', p: '4', borderRadius: 'lg', bg: 'bg.panel', borderWidth: '1px', borderColor: 'border.default' })
@@ -195,13 +214,33 @@ const busRow = css({ display: 'grid', gridTemplateColumns: '[1fr auto auto auto]
         <PropertyRow label="Join session"><Switch v-model="link" disabled aria-label="Join Link session" /></PropertyRow>
       </section>
       <section :class="card" aria-labelledby="settings-timecode">
-        <div :class="cardHeader"><h2 id="settings-timecode" :class="cardTitle">Timecode</h2></div>
-        <PropertyRow label="LTC out"><Switch v-model="ltc" disabled aria-label="LTC out" /></PropertyRow>
+        <div :class="cardHeader">
+          <h2 id="settings-timecode" :class="cardTitle">Timecode</h2>
+          <Switch v-model="options.timecode.enabled" aria-label="LTC out" />
+        </div>
+        <PropertyRow label="LTC bus">
+          <Select :model-value="rig?.timecodeBus ?? NO_BUS" :options="timecodeBuses" :disabled="!rig" aria-label="LTC bus" @update:model-value="setTimecodeBus" />
+        </PropertyRow>
+        <PropertyRow label="Frame rate"><Select v-model="options.timecode.rate" :options="frameRates" aria-label="Timecode frame rate" /></PropertyRow>
+        <PropertyRow label="Song start">
+          <Input :model-value="options.timecode.start" mono :invalid="startInvalid" aria-label="Timecode at song start" @update:model-value="setStart" />
+        </PropertyRow>
+        <PropertyRow label="Hour per song"><Switch v-model="options.timecode.hourPerSong" aria-label="One timecode hour per setlist song" /></PropertyRow>
+        <PropertyRow label="Level">
+          <Slider :model-value="Math.round(options.timecode.gain * 100)" :min="0" :max="100" aria-label="LTC level" @update:model-value="(value: number) => (options.timecode.gain = value / 100)" />
+        </PropertyRow>
         <PropertyRow label="MTC out"><Switch v-model="mtc" disabled aria-label="MTC out" /></PropertyRow>
+        <p :class="hint">
+          LTC follows the play head: it jumps with section jumps and vamps, and stops with the transport. Give it a bus of its own on a spare output;
+          it never plays when no LTC bus is set. With one hour per song, song 1 of a setlist starts at 01:00:00:00, song 2 at 02:00:00:00.
+        </p>
       </section>
       <section :class="card" aria-labelledby="settings-lumen">
         <div :class="cardHeader"><h2 id="settings-lumen" :class="cardTitle">Lumen</h2></div>
-        <p :class="hint">Lumen follows Stems through LTC or MTC. Enable timecode out and point Lumen at the same channel or port.</p>
+        <p :class="hint">
+          Lumen follows Stems through LTC. Route the LTC bus to an output wired (or looped back) to a Lumen audio input, and use the same frame rate in
+          both apps.
+        </p>
       </section>
     </div>
   </LibraryLayout>

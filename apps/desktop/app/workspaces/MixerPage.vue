@@ -18,6 +18,7 @@ const song = computed(() => player.song.value)
 
 const busOptions = computed<SelectOption<string>[]>(() => rig.value?.buses.map((bus) => ({ value: bus.name, label: bus.name })) ?? [])
 function optionsFor(name: string): SelectOption<string>[] {
+  if (!name) return [{ value: '', label: 'No LTC bus' }, ...busOptions.value]
   return busOptions.value.some((option) => option.value === name) ? busOptions.value : [...busOptions.value, { value: name, label: `${name} (not in rig)` }]
 }
 
@@ -51,6 +52,9 @@ const rows = computed<Row[]>(() => {
     { key: 'click', name: 'Click', color: null, track: count, songTrack: null, bus: currentRig.clickBus, gain: options.click.gain },
     { key: 'guide', name: 'Guide', color: null, track: count + 1, songTrack: null, bus: currentRig.guideBus, gain: options.guide.gain },
   )
+  if (options.timecode.enabled) {
+    tracks.push({ key: 'timecode', name: 'Timecode', color: null, track: count + 2, songTrack: null, bus: currentRig.timecodeBus ?? '', gain: options.timecode.gain })
+  }
   return tracks
 })
 
@@ -58,25 +62,30 @@ function setGain(row: Row, position: number) {
   const gain = faderToGain(position)
   if (row.songTrack !== null) void player.setTrackGain(row.songTrack, gain)
   else if (row.key === 'click') options.click.gain = gain
-  else options.guide.gain = gain
+  else if (row.key === 'guide') options.guide.gain = gain
+  else options.timecode.gain = gain
 }
 
 function setBus(row: Row, name: string) {
   const currentRig = rig.value
   if (!currentRig) return
   if (row.songTrack !== null) void player.setTrackBus(row.songTrack, name)
-  else void player.applyRig(row.key === 'click' ? { ...currentRig, clickBus: name } : { ...currentRig, guideBus: name })
+  else if (row.key === 'click') void player.applyRig({ ...currentRig, clickBus: name })
+  else if (row.key === 'guide') void player.applyRig({ ...currentRig, guideBus: name })
+  else void player.applyRig({ ...currentRig, timecodeBus: name })
 }
 
 function toggleMute(row: Row) {
   if (row.songTrack !== null) void player.setMute(row.songTrack, !player.muted.value[row.songTrack])
   else if (row.key === 'click') options.click.enabled = !options.click.enabled
-  else options.guide.enabled = !options.guide.enabled
+  else if (row.key === 'guide') options.guide.enabled = !options.guide.enabled
+  else options.timecode.enabled = false
 }
 
 function isMuted(row: Row): boolean {
   if (row.songTrack !== null) return player.muted.value[row.songTrack] ?? false
-  return row.key === 'click' ? !options.click.enabled : !options.guide.enabled
+  if (row.key === 'click') return !options.click.enabled
+  return row.key === 'guide' ? !options.guide.enabled : !options.timecode.enabled
 }
 
 const channels = computed(() => Array.from({ length: deviceChannels.value }, (_, index) => index))

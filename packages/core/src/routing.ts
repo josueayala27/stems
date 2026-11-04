@@ -15,6 +15,8 @@ export interface RoutingDoc {
   clickBus: number
   guideBus: number
   padBus: number
+  /** `null`: LTC plays nowhere. */
+  timecodeBus: number | null
 }
 
 export type Target = { kind: 'stereo'; left: number; right: number } | { kind: 'mono'; channel: number }
@@ -78,6 +80,7 @@ export function routingDoc(rig: Rig): RoutingDoc {
     clickBus: busIndex(rig, rig.clickBus) ?? 0,
     guideBus: busIndex(rig, rig.guideBus) ?? 0,
     padBus: busIndex(rig, rig.padBus) ?? stemBusIndex(rig),
+    timecodeBus: rig.timecodeBus === null ? null : busIndex(rig, rig.timecodeBus),
   }
 }
 
@@ -119,6 +122,13 @@ export function routingWarnings(rig: Rig, deviceChannels = Number.POSITIVE_INFIN
   }
   check(doc.clickBus, 'The click')
   if (doc.guideBus !== doc.clickBus) check(doc.guideBus, 'The guide')
+  if (doc.timecodeBus !== null) {
+    check(doc.timecodeBus, 'Timecode')
+    const ltc = rig.buses[doc.timecodeBus]
+    if (ltc && !ltc.foh && (doc.timecodeBus === doc.clickBus || doc.timecodeBus === doc.guideBus)) {
+      warnings.push({ bus: ltc.name, message: `Timecode shares ${ltc.name} with the click or guide: give LTC a bus of its own.` })
+    }
+  }
   for (const track of song?.tracks ?? []) {
     if (track.kind === 'stem') continue
     const index = busIndex(rig, track.defaultBus) ?? (track.kind === 'click' ? doc.clickBus : doc.guideBus)
@@ -130,7 +140,7 @@ export function routingWarnings(rig: Rig, deviceChannels = Number.POSITIVE_INFIN
 
 /** A starting rig for a device: FOH and IEM pairs on four outputs or more, one main pair otherwise. */
 export function defaultRig(deviceChannels: number, newId: () => string = () => crypto.randomUUID()): Rig {
-  const base = { id: newId(), name: 'Default rig', device: '', deviceId: null, sampleRate: null, bufferSize: 256 as const }
+  const base = { id: newId(), name: 'Default rig', device: '', deviceId: null, sampleRate: null, bufferSize: 256 as const, timecodeBus: null }
   if (deviceChannels >= 4) {
     return {
       ...base,
@@ -184,6 +194,7 @@ export function renameBus(rig: Rig, from: string, to: string): Rig {
     clickBus: swap(rig.clickBus),
     guideBus: swap(rig.guideBus),
     padBus: swap(rig.padBus),
+    timecodeBus: rig.timecodeBus === null ? null : swap(rig.timecodeBus),
   }
 }
 

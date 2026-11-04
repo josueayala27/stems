@@ -3,7 +3,7 @@ import type { Rig, Setlist, SetlistItem, Song } from '@stems/schema'
 import type { SongDoc, TransitionDoc } from './engine'
 
 /** The part of a song the engine needs to play it. Track buses are resolved by name in `rig`. */
-export function songDoc(song: Song, rig: Rig | null = null): SongDoc {
+export function songDoc(song: Song, rig: Rig | null = null, timecodeStart: string | null = null): SongDoc {
   return {
     sampleRate: song.sampleRate,
     bpm: song.bpm,
@@ -20,6 +20,7 @@ export function songDoc(song: Song, rig: Rig | null = null): SongDoc {
       .sort((a, b) => a.startSample - b.startSample)
       .map((section) => ({ name: section.name, startSample: section.startSample, endSample: section.endSample })),
     markers: song.markers.map((marker) => ({ sample: marker.sample, action: marker.action })),
+    timecodeStart,
   }
 }
 

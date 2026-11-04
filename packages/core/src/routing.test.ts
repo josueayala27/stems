@@ -75,7 +75,13 @@ describe('routingDoc', () => {
       clickBus: 2,
       guideBus: 1,
       padBus: 0,
+      timecodeBus: null,
     })
+  })
+
+  it('sends timecode nowhere when its bus is unset or missing', () => {
+    expect(routingDoc({ ...tourRig(), timecodeBus: 'Click' }).timecodeBus).toBe(2)
+    expect(routingDoc({ ...tourRig(), timecodeBus: 'Gone' }).timecodeBus).toBeNull()
   })
 
   it('falls back to the first bus for unknown names', () => {
@@ -100,6 +106,13 @@ describe('routingWarnings', () => {
     expect(routingWarnings(rig, 16)[0]?.message).toBe('The guide on IEM shares output 2 with front of house.')
     const far = setChannels(setChannels(tourRig(), 'FOH', [0, 1, 6]), 'IEM', [6])
     expect(routingWarnings(far, 4)).toEqual([])
+  })
+
+  it('warns when timecode reaches front of house or shares the click bus', () => {
+    expect(routingWarnings({ ...tourRig(), timecodeBus: 'FOH' }, 16)[0]?.message).toBe('Timecode plays into FOH, a front-of-house bus.')
+    expect(routingWarnings({ ...tourRig(), timecodeBus: 'Click' }, 16)[0]?.message).toBe(
+      'Timecode shares Click with the click or guide: give LTC a bus of its own.',
+    )
   })
 
   it('ignores a muted bus and checks click and guide tracks of the song', () => {

@@ -56,6 +56,8 @@ export const rigSchema = z
     clickBus: z.string().default('Click'),
     guideBus: z.string().default('Guide'),
     padBus: z.string().default('FOH'),
+    /** The LTC bus. `null`, or a name the rig lacks, sends timecode nowhere: it never falls back. */
+    timecodeBus: z.string().nullable().default(null),
   })
   .superRefine((rig, ctx) => {
     const names = new Set<string>()
