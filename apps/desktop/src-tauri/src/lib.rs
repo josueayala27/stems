@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use stems_engine::device::{DeviceInfo, OpenedOutput, OutputConfig};
 use stems_engine::engine::{PerformOptions, SongDoc, TransitionDoc};
 use stems_engine::host::EngineHost;
-use stems_engine::{SongInfo, StateEvent, Transport};
+use stems_engine::{RoutingDoc, SongInfo, StateEvent, Transport};
 use stems_library::import::{self, ImportMode, ImportedSong, Library, Rejected};
 use stems_library::relink::{self, Found, Missing};
 use tauri::ipc::Response;
@@ -74,6 +74,13 @@ async fn engine_set_options(host: State<'_, EngineHost>, options: PerformOptions
 async fn engine_set_pad(host: State<'_, EngineHost>, file: Option<PathBuf>) -> Result<(), String> {
     let host = host.inner().clone();
     blocking(move || host.set_pad(file).map_err(|error| error.to_string())).await
+}
+
+/// The rig's buses (by index) and where each goes on the device.
+#[tauri::command]
+async fn engine_set_routing(host: State<'_, EngineHost>, routing: RoutingDoc) -> Result<(), String> {
+    let host = host.inner().clone();
+    blocking(move || host.set_routing(routing).map_err(|error| error.to_string())).await
 }
 
 /// A transport command, now or at `at` (a frame of the engine clock).
@@ -160,6 +167,7 @@ pub fn run() {
             engine_clear_next,
             engine_set_options,
             engine_set_pad,
+            engine_set_routing,
             engine_command,
             library_plan_import,
             library_import,

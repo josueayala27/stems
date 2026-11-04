@@ -1,5 +1,6 @@
 use serde::Serialize;
 
+use crate::routing::MAX_BUSES;
 use crate::MAX_TRACKS;
 
 /// What an armed action will do.
@@ -55,8 +56,19 @@ pub struct EngineState {
     /// Callback time over buffer time, 0–1+.
     pub cpu_load: f32,
     pub track_count: usize,
-    /// Peak per track with a 300 ms release, linear.
+    /// Peak per track with a 300 ms release, linear, after the track fader.
     pub meters: [f32; MAX_TRACKS],
+    /// RMS per track over a 300 ms average, linear.
+    pub rms: [f32; MAX_TRACKS],
+    pub bus_count: usize,
+    /// Peak and RMS per bus, after the bus fader (`meter.rs`).
+    pub bus_meters: [f32; MAX_BUSES],
+    pub bus_rms: [f32; MAX_BUSES],
+    /// Bus each track plays into, after the role fallback.
+    pub track_buses: [u8; MAX_TRACKS],
+    /// Output channels of the device the mixer last rendered to.
+    pub device_channels: usize,
+    /// Loudest left and right of any bus, with a 300 ms release.
     pub master: [f32; 2],
 }
 
@@ -87,6 +99,12 @@ impl EngineState {
             cpu_load: 0.0,
             track_count: 0,
             meters: [0.0; MAX_TRACKS],
+            rms: [0.0; MAX_TRACKS],
+            bus_count: 0,
+            bus_meters: [0.0; MAX_BUSES],
+            bus_rms: [0.0; MAX_BUSES],
+            track_buses: [0; MAX_TRACKS],
+            device_channels: 0,
             master: [0.0; 2],
         }
     }
@@ -118,6 +136,11 @@ pub struct StateEvent {
     pub underruns: u64,
     pub cpu_load: f32,
     pub meters: Vec<f32>,
+    pub rms: Vec<f32>,
+    pub bus_meters: Vec<f32>,
+    pub bus_rms: Vec<f32>,
+    pub track_buses: Vec<u8>,
+    pub device_channels: usize,
     pub master: [f32; 2],
 }
 
@@ -146,6 +169,11 @@ impl From<&EngineState> for StateEvent {
             underruns: state.underruns,
             cpu_load: state.cpu_load,
             meters: state.meters[..state.track_count.min(MAX_TRACKS)].to_vec(),
+            rms: state.rms[..state.track_count.min(MAX_TRACKS)].to_vec(),
+            bus_meters: state.bus_meters[..state.bus_count.min(MAX_BUSES)].to_vec(),
+            bus_rms: state.bus_rms[..state.bus_count.min(MAX_BUSES)].to_vec(),
+            track_buses: state.track_buses[..state.track_count.min(MAX_TRACKS)].to_vec(),
+            device_channels: state.device_channels,
             master: state.master,
         }
     }

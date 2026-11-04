@@ -5,7 +5,9 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use crate::meter::Meter;
 use crate::ramp::Ramp;
+use crate::routing::Routing;
 use crate::sampler::Sampler;
 use crate::source::Source;
 use crate::tempo::{Quantize, TempoMap, Unit};
@@ -28,11 +30,17 @@ pub struct TrackSpec {
     pub role: TrackRole,
     pub gain: f32,
     pub muted: bool,
+    /// Bus index in the rig. `None`, or a bus the rig lacks, plays into the role's bus.
+    pub bus: Option<usize>,
 }
 
 impl TrackSpec {
     pub fn stem(source: Source) -> Self {
-        Self { source, role: TrackRole::Stem, gain: 1.0, muted: false }
+        Self { source, role: TrackRole::Stem, gain: 1.0, muted: false, bus: None }
+    }
+
+    pub fn with_role(source: Source, role: TrackRole, gain: f32) -> Self {
+        Self { source, role, gain, muted: false, bus: None }
     }
 }
 
@@ -43,9 +51,9 @@ pub struct Track {
     pub(crate) gain: f32,
     pub(crate) muted: bool,
     pub(crate) soloed: bool,
+    pub(crate) bus: Option<usize>,
     pub(crate) ramp: Ramp,
-    pub(crate) peak: f32,
-    pub(crate) meter: f32,
+    pub(crate) meter: Meter,
     /// The old position's audio during a jump crossfade.
     pub(crate) fade: Box<[f32]>,
 }
@@ -60,11 +68,22 @@ impl Track {
             gain,
             muted: spec.muted,
             soloed: false,
+            bus: spec.bus,
             ramp: Ramp::new(start),
-            peak: 0.0,
-            meter: 0.0,
+            meter: Meter::default(),
             fade: vec![0.0; MAX_FADE * CHANNELS].into_boxed_slice(),
         }
+    }
+
+    /// The bus this track plays into under `routing`.
+    #[inline]
+    pub(crate) fn bus(&self, routing: &Routing) -> usize {
+        let role = match self.role {
+            TrackRole::Stem => routing.roles.stem,
+            TrackRole::Click => routing.roles.click,
+            TrackRole::Guide => routing.roles.guide,
+        };
+        routing.resolve(self.bus, role)
     }
 
     /// Click and guide ignore solo: soloing a stem never silences the click.
@@ -218,7 +237,7 @@ mod tests {
 
     #[test]
     fn solo_never_silences_click_or_guide() {
-        let click = Track::new(TrackSpec { source: Source::memory(vec![]), role: TrackRole::Click, gain: 0.7, muted: false });
+        let click = Track::new(TrackSpec::with_role(Source::memory(vec![]), TrackRole::Click, 0.7));
         let stem = Track::new(TrackSpec::stem(Source::memory(vec![])));
         assert_eq!(click.target(true), 0.7);
         assert_eq!(stem.target(true), 0.0);

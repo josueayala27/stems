@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { setlistSchema } from '@stems/schema'
+import { defaultRig } from '@stems/core'
+import { rigSchema, setlistSchema } from '@stems/schema'
 import { songFromImport } from '~/data/importSong'
 import { readOptions, DEFAULT_OPTIONS } from './options'
 import { fromEngine, padAt, songDoc, toEngine, transitionDoc } from './songDoc'
@@ -23,9 +24,16 @@ describe('songDoc', () => {
   it('sends tracks, sorted sections and markers', () => {
     const doc = songDoc(song)
     expect(doc.sampleRate).toBe(44_100)
-    expect(doc.tracks).toEqual([{ file: '/m/bass.wav', kind: 'stem', gain: 1, mute: false }])
+    expect(doc.tracks).toEqual([{ file: '/m/bass.wav', kind: 'stem', gain: 1, mute: false, bus: null }])
     expect(doc.sections.map((section) => section.name)).toEqual(['Verse', 'Chorus'])
     expect(doc.markers).toEqual([{ sample: 400_000, action: 'stop' }])
+  })
+
+  it('resolves track buses by name in the rig, null when the rig lacks it', () => {
+    const rig = rigSchema.parse(defaultRig(16, () => 'id'))
+    expect(songDoc(song, rig).tracks[0]?.bus).toBe(0)
+    const renamed = { ...song, tracks: song.tracks.map((track) => ({ ...track, defaultBus: 'Drums' })) }
+    expect(songDoc(renamed, rig).tracks[0]?.bus).toBeNull()
   })
 })
 

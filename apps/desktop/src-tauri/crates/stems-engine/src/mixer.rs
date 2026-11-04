@@ -7,12 +7,14 @@
 use std::f32::consts::FRAC_PI_2;
 
 use crate::command::{At, Command, LiveAction, Scheduled, Transition, TransitionKind};
+use crate::meter::Meter;
 use crate::pad::{Pad, PAD_FADE_SECONDS};
 use crate::ramp::Ramp;
+use crate::routing::{Routing, Target, MAX_BUSES};
 use crate::song::{MarkerAction, Song, Span, MAX_FADE};
 use crate::source::Source;
 use crate::state::{ArmedKind, EngineState};
-use crate::{CHANNELS, MAX_BLOCK};
+use crate::{CHANNELS, MAX_BLOCK, MAX_TRACKS};
 
 pub use crate::song::{Track, TrackRole, TrackSpec};
 
@@ -21,7 +23,9 @@ pub const SCHEDULE_CAPACITY: usize = 256;
 /// Jump and stop crossfade length.
 pub const FADE_SECONDS: f64 = 0.005;
 /// Meter release time.
-const METER_RELEASE_SECONDS: f32 = 0.3;
+const METER_RELEASE_SECONDS: f32 = crate::meter::METER_SECONDS;
+/// Samples between the starts of two buses in the bus buffer.
+const BUS_STRIDE: usize = MAX_BLOCK * CHANNELS;
 /// Events handled at one play-head position before rendering on (guards against loops).
 const MAX_EVENTS_PER_STEP: usize = 16;
 
@@ -31,6 +35,7 @@ pub enum Garbage {
     Song(Box<Song>),
     Source(Source),
     Pad(Box<Pad>),
+    Routing(Box<Routing>),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -91,13 +96,16 @@ impl JumpFade {
     }
 }
 
-/// Mix `frames` of `song` from `position` into `mix`. Returns the number of underrun reads.
+/// Mix `frames` of `song` from `position` into each track's bus, `offset` frames into the block.
+/// Returns the number of underrun reads.
 #[allow(clippy::too_many_arguments)]
 fn mix_song(
     song: &mut Song,
+    routing: &Routing,
     position: u64,
     frames: usize,
-    mix: &mut [f32],
+    buses: &mut [f32],
+    offset: usize,
     scratch: &mut [f32],
     envelope: Option<Envelope>,
     jump: JumpFade,
@@ -113,7 +121,9 @@ fn mix_song(
         } else if track.source.read(position, scratch) {
             underruns += 1;
         }
-        let mut peak = track.peak;
+        let start = track.bus(routing) * BUS_STRIDE + offset * CHANNELS;
+        let mix = &mut buses[start..start + frames * CHANNELS];
+        let mut meter = track.meter;
         for (index, (out, input)) in mix.chunks_exact_mut(CHANNELS).zip(scratch.chunks_exact(CHANNELS)).enumerate() {
             let gain = track.ramp.next_gain() * envelope.map_or(1.0, |envelope| envelope.gain(index));
             let (mut left, mut right) = (input[0], input[1]);
@@ -128,9 +138,9 @@ fn mix_song(
             right *= gain;
             out[0] += left;
             out[1] += right;
-            peak = peak.max(left.abs()).max(right.abs());
+            meter.feed(left, right);
         }
-        track.peak = peak;
+        track.meter = meter;
     }
     underruns
 }
@@ -160,7 +170,12 @@ pub struct Mixer {
     pad_gain: Ramp,
     pad_fade_frames: usize,
     scratch: Box<[f32]>,
-    mix: Box<[f32]>,
+    /// One stereo block per bus, `BUS_STRIDE` apart.
+    buses: Box<[f32]>,
+    routing: Box<Routing>,
+    bus_levels: [Ramp; MAX_BUSES],
+    bus_meters: [Meter; MAX_BUSES],
+    device_channels: usize,
     xruns: u64,
     underruns: u64,
     deferred: u64,
@@ -202,7 +217,11 @@ impl Mixer {
             pad_gain: Ramp::new(0.8),
             pad_fade_frames: (PAD_FADE_SECONDS * f64::from(sample_rate)) as usize,
             scratch: vec![0.0; MAX_BLOCK * CHANNELS].into_boxed_slice(),
-            mix: vec![0.0; MAX_BLOCK * CHANNELS].into_boxed_slice(),
+            buses: vec![0.0; MAX_BUSES * BUS_STRIDE].into_boxed_slice(),
+            routing: Box::new(Routing::stereo()),
+            bus_levels: [Ramp::new(1.0); MAX_BUSES],
+            bus_meters: [Meter::default(); MAX_BUSES],
+            device_channels: CHANNELS,
             xruns: 0,
             underruns: 0,
             deferred: 0,
@@ -222,25 +241,19 @@ impl Mixer {
         self.fade_frames
     }
 
-    /// The device callback: mix into `out`, interleaved with `channels` channels. The stereo mix
-    /// goes to the first two channels (summed for a mono device); routing arrives in M4.
+    /// The device callback: mix into `out`, interleaved with `channels` channels. Each bus goes
+    /// through its fader to the channels the routing gives it (`routing.rs` has the fold rules).
     pub fn process(&mut self, out: &mut [f32], channels: usize) {
         let channels = channels.max(1);
+        self.device_channels = channels;
         let frames = out.len() / channels;
         let mut done = 0;
         while done < frames {
             let count = (frames - done).min(MAX_BLOCK);
             self.process_block(count);
             let destination = &mut out[done * channels..(done + count) * channels];
-            for (frame, mixed) in destination.chunks_exact_mut(channels).zip(self.mix.chunks_exact(CHANNELS)) {
-                if channels == 1 {
-                    frame[0] = 0.5 * (mixed[0] + mixed[1]);
-                } else {
-                    frame[0] = mixed[0];
-                    frame[1] = mixed[1];
-                    frame[2..].fill(0.0);
-                }
-            }
+            destination.fill(0.0);
+            self.route(destination, channels, count);
             done += count;
         }
         out[frames * channels..].fill(0.0);
@@ -249,9 +262,43 @@ impl Mixer {
 
     /// Offline render with no device: `frames` stereo frames, through the same code as `process`.
     pub fn render(&mut self, frames: usize) -> Vec<f32> {
-        let mut out = vec![0.0; frames * CHANNELS];
-        self.process(&mut out, CHANNELS);
+        self.render_channels(frames, CHANNELS)
+    }
+
+    /// Offline render to a device with `channels` outputs, interleaved.
+    pub fn render_channels(&mut self, frames: usize, channels: usize) -> Vec<f32> {
+        let mut out = vec![0.0; frames * channels.max(1)];
+        self.process(&mut out, channels);
         out
+    }
+
+    /// Sum each bus, after its fader, into the device channels it is routed to.
+    fn route(&mut self, destination: &mut [f32], channels: usize, frames: usize) {
+        let mut master = self.master_peak;
+        for (index, route) in self.routing.buses().iter().enumerate() {
+            let level = &mut self.bus_levels[index];
+            level.set(route.level());
+            let meter = &mut self.bus_meters[index];
+            let targets = route.targets(channels);
+            let source = &self.buses[index * BUS_STRIDE..index * BUS_STRIDE + frames * CHANNELS];
+            for (frame, input) in destination.chunks_exact_mut(channels).zip(source.chunks_exact(CHANNELS)) {
+                let gain = level.next_gain();
+                let (left, right) = (input[0] * gain, input[1] * gain);
+                meter.feed(left, right);
+                master[0] = master[0].max(left.abs());
+                master[1] = master[1].max(right.abs());
+                for target in targets.iter() {
+                    match target {
+                        Target::Stereo { left: l, right: r } => {
+                            frame[usize::from(l)] += left;
+                            frame[usize::from(r)] += right;
+                        }
+                        Target::Mono(channel) => frame[usize::from(channel)] += 0.5 * (left + right),
+                    }
+                }
+            }
+        }
+        self.master_peak = master;
     }
 
     /// The device layer reports a late callback.
@@ -390,6 +437,25 @@ impl Mixer {
             }
             Command::SetPad(pad) => self.set_pad(pad),
             Command::PadGain(gain) => self.pad_gain.set(if gain.is_finite() { gain.clamp(0.0, 4.0) } else { 0.0 }),
+            Command::SetRouting(routing) => {
+                let old = std::mem::replace(&mut self.routing, routing);
+                self.retire(Garbage::Routing(old));
+            }
+            Command::BusGain { bus, gain } => {
+                if let Some(route) = self.routing.bus_mut(bus) {
+                    route.set_gain(gain);
+                }
+            }
+            Command::BusMute { bus, muted } => {
+                if let Some(route) = self.routing.bus_mut(bus) {
+                    route.muted = muted;
+                }
+            }
+            Command::TrackBus { track, bus } => {
+                if let Some(track) = self.track_mut(track) {
+                    track.bus = bus;
+                }
+            }
         }
     }
 
@@ -662,8 +728,10 @@ impl Mixer {
         }
         let frames = frames.max(1);
 
-        let mix = &mut self.mix[offset * CHANNELS..(offset + frames) * CHANNELS];
-        mix.fill(0.0);
+        for bus in 0..self.routing.bus_count() {
+            let start = bus * BUS_STRIDE + offset * CHANNELS;
+            self.buses[start..start + frames * CHANNELS].fill(0.0);
+        }
         let incoming = self.outgoing.as_ref().map(|out| Envelope { start: out.fade, len: out.fade_len, rising: true });
         let mut advance_now = false;
 
@@ -673,6 +741,8 @@ impl Mixer {
                     let scratch = &mut self.scratch[..frames * CHANNELS];
                     sampler.read(total - self.count_in, scratch);
                     let gain = song.tracks[click].target(false);
+                    let start = song.tracks[click].bus(&self.routing) * BUS_STRIDE + offset * CHANNELS;
+                    let mix = &mut self.buses[start..start + frames * CHANNELS];
                     for (out, input) in mix.iter_mut().zip(scratch.iter()) {
                         *out += input * gain;
                     }
@@ -684,7 +754,7 @@ impl Mixer {
             advance_now = self.waiting == 0;
             if let Some(song) = self.song.as_deref_mut() {
                 if self.jump.active() {
-                    mix_song(song, self.position, frames, mix, &mut self.scratch, None, self.jump, true);
+                    mix_song(song, &self.routing, self.position, frames, &mut self.buses, offset, &mut self.scratch, None, self.jump, true);
                 }
             }
         } else if let Some(song) = self.song.as_deref_mut() {
@@ -692,9 +762,11 @@ impl Mixer {
                 let playable = (frames as u64).min(song.length.saturating_sub(self.position)) as usize;
                 self.underruns += mix_song(
                     song,
+                    &self.routing,
                     self.position,
                     playable,
-                    &mut mix[..playable * CHANNELS],
+                    &mut self.buses,
+                    offset,
                     &mut self.scratch,
                     incoming,
                     self.jump,
@@ -702,7 +774,7 @@ impl Mixer {
                 );
                 self.position += playable as u64;
             } else if self.jump.active() {
-                mix_song(song, self.position, frames, mix, &mut self.scratch, None, self.jump, true);
+                mix_song(song, &self.routing, self.position, frames, &mut self.buses, offset, &mut self.scratch, None, self.jump, true);
             }
         }
         if self.jump.active() {
@@ -713,7 +785,7 @@ impl Mixer {
             let left = out.song.length.saturating_sub(out.position) as usize;
             let count = frames.min(left).min(out.fade_len.saturating_sub(out.fade));
             let envelope = Envelope { start: out.fade, len: out.fade_len, rising: false };
-            mix_song(&mut out.song, out.position, count, &mut mix[..count * CHANNELS], &mut self.scratch, Some(envelope), JumpFade::default(), false);
+            mix_song(&mut out.song, &self.routing, out.position, count, &mut self.buses, offset, &mut self.scratch, Some(envelope), JumpFade::default(), false);
             out.position += count as u64;
             out.fade += frames;
             if out.fade >= out.fade_len || out.position >= out.song.length {
@@ -724,11 +796,6 @@ impl Mixer {
         }
 
         self.mix_pads(offset, frames);
-        let mix = &self.mix[offset * CHANNELS..(offset + frames) * CHANNELS];
-        for frame in mix.chunks_exact(CHANNELS) {
-            self.master_peak[0] = self.master_peak[0].max(frame[0].abs());
-            self.master_peak[1] = self.master_peak[1].max(frame[1].abs());
-        }
         self.clock += frames as u64;
         if advance_now {
             self.advance(true);
@@ -737,7 +804,8 @@ impl Mixer {
     }
 
     fn mix_pads(&mut self, offset: usize, frames: usize) {
-        let mix = &mut self.mix[offset * CHANNELS..(offset + frames) * CHANNELS];
+        let start = self.routing.roles.pad * BUS_STRIDE + offset * CHANNELS;
+        let mix = &mut self.buses[start..start + frames * CHANNELS];
         let ramp = self.pad_gain;
         let mut finished = false;
         if let Some(old) = self.old_pad.as_mut() {
@@ -767,9 +835,10 @@ impl Mixer {
 
     fn publish(&mut self, frames: usize) {
         self.frames_since_publish += frames;
-        let release =
-            (-(self.frames_since_publish as f32) / (METER_RELEASE_SECONDS * self.sample_rate as f32)).exp();
+        let elapsed = self.frames_since_publish;
+        let release = (-(elapsed as f32) / (METER_RELEASE_SECONDS * self.sample_rate as f32)).exp();
         self.frames_since_publish = 0;
+        let rate = self.sample_rate;
 
         let state = self.state.input_buffer_mut();
         state.sample_rate = self.sample_rate;
@@ -803,16 +872,27 @@ impl Mixer {
             self.master_peak[side] = 0.0;
         }
         state.master = self.master;
+        state.device_channels = self.device_channels;
+        let bus_count = self.routing.bus_count();
+        state.bus_count = bus_count;
+        for (bus, meter) in self.bus_meters.iter_mut().enumerate() {
+            if bus < bus_count {
+                (state.bus_meters[bus], state.bus_rms[bus]) = meter.settle(elapsed, rate);
+            } else {
+                *meter = Meter::default();
+                state.bus_meters[bus] = 0.0;
+                state.bus_rms[bus] = 0.0;
+            }
+        }
         match self.song.as_deref_mut() {
             Some(song) => {
                 state.loaded = true;
                 state.song_tag = song.tag;
                 state.length = song.length;
                 state.track_count = song.tracks.len();
-                for (meter, track) in state.meters.iter_mut().zip(song.tracks.iter_mut()) {
-                    track.meter = track.peak.max(track.meter * release);
-                    track.peak = 0.0;
-                    *meter = track.meter;
+                for (index, track) in song.tracks.iter_mut().enumerate().take(MAX_TRACKS) {
+                    (state.meters[index], state.rms[index]) = track.meter.settle(elapsed, rate);
+                    state.track_buses[index] = track.bus(&self.routing) as u8;
                 }
             }
             None => {
@@ -975,7 +1055,7 @@ mod tests {
         let specs = vec![
             TrackSpec::stem(Source::memory(vec![1.0; 2_000 * CHANNELS])),
             TrackSpec::stem(Source::memory(vec![2.0; 2_000 * CHANNELS])),
-            TrackSpec { source: Source::memory(vec![4.0; 2_000 * CHANNELS]), role: TrackRole::Click, gain: 1.0, muted: false },
+            TrackSpec::with_role(Source::memory(vec![4.0; 2_000 * CHANNELS]), TrackRole::Click, 1.0),
         ];
         engine.send(Command::LoadSong(Box::new(Song::build(1, specs, Timeline::plain(RATE)).unwrap()))).unwrap();
         engine.send(Command::Solo { track: 1, soloed: true }).unwrap();
@@ -1174,7 +1254,7 @@ mod tests {
         let clicks = click::click_track(&tempo, 2 * BAR, &options, RATE);
         let specs = vec![
             TrackSpec::stem(Source::memory(vec![0.0; 2 * BAR as usize * CHANNELS])),
-            TrackSpec { source: Source::Sampler(Arc::new(clicks)), role: TrackRole::Click, gain: 1.0, muted: false },
+            TrackSpec::with_role(Source::Sampler(Arc::new(clicks)), TrackRole::Click, 1.0),
         ];
         let timeline = Timeline { tempo, count_in: Some((Arc::new(count_in), frames)), ..Timeline::plain(RATE) };
         engine.send(Command::LoadSong(Box::new(Song::build(1, specs, timeline).unwrap()))).unwrap();
@@ -1310,10 +1390,123 @@ mod tests {
     fn sampler_tracks_mix_like_audio() {
         let (mut engine, mut mixer) = engine::new(RATE);
         let sampler = Sampler::new(vec![Arc::from(vec![1.0, 1.0])], vec![crate::sampler::Hit { at: 5, sound: 0, gain: 0.5 }], 100);
-        let specs = vec![TrackSpec { source: Source::Sampler(Arc::new(sampler)), role: TrackRole::Click, gain: 1.0, muted: false }];
+        let specs = vec![TrackSpec::with_role(Source::Sampler(Arc::new(sampler)), TrackRole::Click, 1.0)];
         engine.send(Command::LoadSong(Box::new(Song::build(1, specs, Timeline::plain(RATE)).unwrap()))).unwrap();
         engine.send(Command::Play).unwrap();
         let out = run(&mut mixer, 10);
         assert_eq!(out, [0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.5, 0.0, 0.0, 0.0]);
+    }
+
+    // ── M4 routing ───────────────────────────────────────────────────────────────────────
+
+    /// FOH on 1/2, IEM on 3/4 and also a mono wedge on 9, Click on 5: a 16-out interface.
+    fn tour_routing() -> Box<Routing> {
+        use crate::routing::{BusDoc, RoutingDoc};
+        let bus = |channels: Vec<u16>| BusDoc { gain: 1.0, mute: false, channels };
+        let doc = RoutingDoc {
+            buses: vec![bus(vec![0, 1]), bus(vec![2, 3, 8]), bus(vec![4])],
+            stem_bus: 0,
+            click_bus: 1,
+            guide_bus: 1,
+            pad_bus: 0,
+        };
+        Box::new(Routing::from_doc(&doc).unwrap())
+    }
+
+    fn routed_engine() -> (Engine, Mixer) {
+        let (mut engine, mixer) = engine::new(RATE);
+        let specs = vec![
+            TrackSpec::stem(Source::memory((0..2_000).flat_map(|_| [1.0, 0.5]).collect::<Vec<f32>>())),
+            TrackSpec::stem(Source::memory(vec![2.0; 2_000 * CHANNELS])),
+            TrackSpec::with_role(Source::memory(vec![4.0; 2_000 * CHANNELS]), TrackRole::Click, 1.0),
+            TrackSpec::with_role(Source::memory(vec![8.0; 2_000 * CHANNELS]), TrackRole::Guide, 1.0),
+        ];
+        engine.send(Command::SetRouting(tour_routing())).unwrap();
+        engine.send(Command::LoadSong(Box::new(Song::build(1, specs, Timeline::plain(RATE)).unwrap()))).unwrap();
+        engine.send(Command::Play).unwrap();
+        (engine, mixer)
+    }
+
+    fn render_device(mixer: &mut Mixer, frames: usize, channels: usize) -> Vec<f32> {
+        let mut out = vec![0.0; frames * channels];
+        for chunk in out.chunks_mut(128 * channels) {
+            assert_no_alloc(|| mixer.process(chunk, channels));
+        }
+        out
+    }
+
+    #[test]
+    fn click_and_guide_reach_the_in_ears_while_stems_reach_front_of_house() {
+        let (mut engine, mut mixer) = routed_engine();
+        let out = render_device(&mut mixer, 1_000, 16);
+        let frame = &out[999 * 16..1_000 * 16];
+        // FOH: the two stems only.
+        assert_eq!(frame[0], 3.0);
+        assert_eq!(frame[1], 2.5);
+        // IEM: click plus guide, stereo on 3/4 and folded to mono on 9.
+        assert_eq!(frame[2], 12.0);
+        assert_eq!(frame[3], 12.0);
+        assert_eq!(frame[8], 12.0);
+        // Nothing on the Click bus, nothing anywhere else.
+        assert!(frame.iter().enumerate().filter(|(index, _)| ![0, 1, 2, 3, 8].contains(index)).all(|(_, &s)| s == 0.0));
+        let state = engine.state();
+        assert_eq!(state.bus_count, 3);
+        assert_eq!(state.device_channels, 16);
+        assert_eq!(&state.track_buses[..4], &[0, 0, 1, 1]);
+        assert_eq!(state.bus_meters[0], 3.0);
+        assert_eq!(state.bus_meters[2], 0.0);
+    }
+
+    #[test]
+    fn a_track_moves_to_another_bus_and_back_to_its_role_bus() {
+        let (mut engine, mut mixer) = routed_engine();
+        engine.send(Command::TrackBus { track: 1, bus: Some(2) }).unwrap();
+        let out = render_device(&mut mixer, 500, 16);
+        assert_eq!(out[499 * 16], 1.0);
+        assert_eq!(out[499 * 16 + 4], 2.0);
+        engine.send(Command::TrackBus { track: 1, bus: None }).unwrap();
+        let out = render_device(&mut mixer, 500, 16);
+        assert_eq!(out[499 * 16], 3.0);
+        assert_eq!(out[499 * 16 + 4], 0.0);
+    }
+
+    #[test]
+    fn bus_faders_ramp_and_mute_without_touching_other_buses() {
+        let (mut engine, mut mixer) = routed_engine();
+        render_device(&mut mixer, 256, 16);
+        engine.send(Command::BusMute { bus: 1, muted: true }).unwrap();
+        engine.send(Command::BusGain { bus: 0, gain: 0.5 }).unwrap();
+        let out = render_device(&mut mixer, 512, 16);
+        let iem: Vec<f32> = out.chunks_exact(16).map(|frame| frame[2]).collect();
+        assert!(iem[0] < 12.0 && iem[0] > 11.0, "the mute ramps: {}", iem[0]);
+        assert!(iem.windows(2).take(RAMP_FRAMES as usize - 1).all(|pair| pair[1] < pair[0]));
+        assert!(iem[RAMP_FRAMES as usize..].iter().all(|&s| s == 0.0));
+        assert_eq!(out[511 * 16], 1.5);
+    }
+
+    #[test]
+    fn replacing_the_routing_hands_the_old_table_back() {
+        let (mut engine, mut mixer) = routed_engine();
+        render_device(&mut mixer, 128, 16);
+        engine.send(Command::SetRouting(Box::default())).unwrap();
+        let out = render_device(&mut mixer, 128, 16);
+        // Everything back on 1/2.
+        assert_eq!(out[127 * 16], 15.0);
+        assert_eq!(out[127 * 16 + 2], 0.0);
+        assert_eq!(engine.collect_garbage(), 2, "the default table and the tour table");
+    }
+
+    #[test]
+    fn the_pad_plays_into_its_bus() {
+        let (mut engine, mut mixer) = engine::new(RATE);
+        let mut routing = *tour_routing();
+        routing.roles.pad = 2;
+        engine.send(Command::SetRouting(Box::new(routing))).unwrap();
+        engine.send(Command::SetPad(Some(Box::new(Pad::new(&vec![1.0; 96_000 * CHANNELS]))))).unwrap();
+        let fade = (PAD_FADE_SECONDS * f64::from(RATE)) as usize;
+        let out = render_device(&mut mixer, fade + 256, 16);
+        let last = &out[(fade + 255) * 16..(fade + 256) * 16];
+        assert!(last[4] > 0.5);
+        assert_eq!(last[0], 0.0);
     }
 }

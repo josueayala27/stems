@@ -1,18 +1,30 @@
 import { z } from 'zod'
-import { colorSchema, idSchema, sampleRateSchema } from './common'
+import { colorSchema, gainSchema, idSchema, sampleRateSchema } from './common'
+
+/** Buses a rig holds (the engine's `MAX_BUSES`). */
+export const MAX_BUSES = 16
+/** Device channels one bus feeds (the engine's `MAX_BUS_CHANNELS`). */
+export const MAX_BUS_CHANNELS = 8
 
 /** A named mix destination, for example `IEM`, `FOH` or `Click`. */
 export const busSchema = z.object({
   id: idSchema,
   name: z.string().min(1),
   color: colorSchema.optional(),
+  gain: gainSchema.default(1),
+  mute: z.boolean().default(false),
+  /** Front of house: the audience hears it, so click and guide must never reach it. */
+  foh: z.boolean().default(false),
 })
 export type Bus = z.infer<typeof busSchema>
 
-/** Maps one bus (by name) to zero-based device output channels. */
+/**
+ * Maps one bus (by name) to zero-based device output channels, in order: pairs are left and right,
+ * a last odd channel gets the mono fold.
+ */
 export const routeSchema = z.object({
   bus: z.string().min(1),
-  channels: z.array(z.number().int().nonnegative()),
+  channels: z.array(z.number().int().nonnegative()).max(MAX_BUS_CHANNELS),
 })
 export type Route = z.infer<typeof routeSchema>
 
@@ -31,12 +43,19 @@ export const rigSchema = z
   .object({
     id: idSchema,
     name: z.string().min(1),
-    /** Output device name as the host reports it. */
-    device: z.string(),
-    sampleRate: sampleRateSchema,
+    /** Output device name as the host reports it, for display. */
+    device: z.string().default(''),
+    /** Output device id from the engine. `null` is the system default output. */
+    deviceId: z.string().nullable().default(null),
+    /** `null` is the device's default rate. */
+    sampleRate: sampleRateSchema.nullable().default(null),
     bufferSize: bufferSizeSchema,
-    buses: z.array(busSchema).default([]),
+    buses: z.array(busSchema).max(MAX_BUSES).default([]),
     routing: z.array(routeSchema).default([]),
+    /** Buses (by name) for the generated click, the guide and the pads. Missing names fall back to the first bus. */
+    clickBus: z.string().default('Click'),
+    guideBus: z.string().default('Guide'),
+    padBus: z.string().default('FOH'),
   })
   .superRefine((rig, ctx) => {
     const names = new Set<string>()

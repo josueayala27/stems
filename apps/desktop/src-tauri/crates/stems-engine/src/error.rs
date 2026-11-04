@@ -18,6 +18,8 @@ pub enum EngineError {
     Disconnected,
     /// A newer request replaced this one before it finished (or the device rate changed).
     Superseded,
+    /// A routing document the mixer cannot use.
+    Routing(String),
 }
 
 impl fmt::Display for EngineError {
@@ -33,6 +35,7 @@ impl fmt::Display for EngineError {
             }
             Self::Disconnected => write!(f, "the engine thread has stopped"),
             Self::Superseded => write!(f, "replaced by a newer request"),
+            Self::Routing(message) => write!(f, "routing error: {message}"),
         }
     }
 }

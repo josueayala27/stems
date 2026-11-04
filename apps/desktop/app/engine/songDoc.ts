@@ -1,14 +1,21 @@
-import type { Setlist, SetlistItem, Song } from '@stems/schema'
+import { busIndex } from '@stems/core'
+import type { Rig, Setlist, SetlistItem, Song } from '@stems/schema'
 import type { SongDoc, TransitionDoc } from './engine'
 
-/** The part of a song the engine needs to play it. */
-export function songDoc(song: Song): SongDoc {
+/** The part of a song the engine needs to play it. Track buses are resolved by name in `rig`. */
+export function songDoc(song: Song, rig: Rig | null = null): SongDoc {
   return {
     sampleRate: song.sampleRate,
     bpm: song.bpm,
     timeSignature: song.timeSignature,
     tempoMap: song.tempoMap,
-    tracks: song.tracks.map((track) => ({ file: track.file, kind: track.kind, gain: track.gain, mute: track.mute })),
+    tracks: song.tracks.map((track) => ({
+      file: track.file,
+      kind: track.kind,
+      gain: track.gain,
+      mute: track.mute,
+      bus: rig ? busIndex(rig, track.defaultBus) : null,
+    })),
     sections: [...song.sections]
       .sort((a, b) => a.startSample - b.startSample)
       .map((section) => ({ name: section.name, startSample: section.startSample, endSample: section.endSample })),

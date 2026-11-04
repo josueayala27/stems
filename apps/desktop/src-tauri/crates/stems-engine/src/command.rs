@@ -1,6 +1,7 @@
 use serde::Deserialize;
 
 use crate::pad::Pad;
+use crate::routing::Routing;
 use crate::song::Song;
 use crate::source::Source;
 use crate::tempo::Quantize;
@@ -88,6 +89,12 @@ pub enum Command {
     /// Crossfade to another pad, or out with `None`.
     SetPad(Option<Box<Pad>>),
     PadGain(f32),
+    /// Replace the routing table (the rig's buses). The old one goes back to be dropped.
+    SetRouting(Box<Routing>),
+    BusGain { bus: usize, gain: f32 },
+    BusMute { bus: usize, muted: bool },
+    /// Move a track to another bus, or back to its role's bus with `None`.
+    TrackBus { track: usize, bus: Option<usize> },
 }
 
 #[derive(Debug)]
@@ -112,6 +119,9 @@ pub enum Transport {
     ReleaseVamp,
     Advance { play: bool },
     PadGain { gain: f32 },
+    BusGain { bus: usize, gain: f32 },
+    BusMute { bus: usize, muted: bool },
+    TrackBus { track: usize, bus: Option<usize> },
 }
 
 impl From<Transport> for Command {
@@ -129,6 +139,9 @@ impl From<Transport> for Command {
             Transport::ReleaseVamp => Self::ReleaseVamp,
             Transport::Advance { play } => Self::Advance { play },
             Transport::PadGain { gain } => Self::PadGain(gain),
+            Transport::BusGain { bus, gain } => Self::BusGain { bus, gain },
+            Transport::BusMute { bus, muted } => Self::BusMute { bus, muted },
+            Transport::TrackBus { track, bus } => Self::TrackBus { track, bus },
         }
     }
 }
@@ -146,5 +159,9 @@ mod tests {
         let arm: Transport =
             serde_json::from_str(r#"{"type":"arm","action":{"type":"jump","to":96000},"quantize":"bar"}"#).unwrap();
         assert_eq!(arm, Transport::Arm { action: LiveAction::Jump { to: 96_000 }, quantize: Quantize::Bar });
+        let bus: Transport = serde_json::from_str(r#"{"type":"trackBus","track":3,"bus":null}"#).unwrap();
+        assert_eq!(bus, Transport::TrackBus { track: 3, bus: None });
+        let gain: Transport = serde_json::from_str(r#"{"type":"busGain","bus":1,"gain":0.5}"#).unwrap();
+        assert_eq!(gain, Transport::BusGain { bus: 1, gain: 0.5 });
     }
 }

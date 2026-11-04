@@ -1,5 +1,6 @@
 // Typed bindings for the Rust engine (`stems-engine`, docs/architecture/02-audio-engine.md).
 // The engine is the clock: the UI shows `engine://state` and never keeps its own transport time.
+import type { RoutingDoc } from '@stems/core'
 import { isTauri } from '~/data/db'
 
 export interface DeviceInfo {
@@ -67,6 +68,10 @@ export type Transport =
   | { type: 'releaseVamp' }
   | { type: 'advance'; play: boolean }
   | { type: 'padGain'; gain: number }
+  | { type: 'busGain'; bus: number; gain: number }
+  | { type: 'busMute'; bus: number; muted: boolean }
+  /** `bus: null` sends the track back to the bus the rig gives its kind. */
+  | { type: 'trackBus'; track: number; bus: number | null }
 
 /** The song document as the engine reads it (a subset of `@stems/schema` Song). */
 export interface SongDoc {
@@ -74,7 +79,8 @@ export interface SongDoc {
   bpm: number
   timeSignature: { numerator: number; denominator: number }
   tempoMap: { sample: number; bpm: number; timeSignature: { numerator: number; denominator: number } }[]
-  tracks: { file: string; kind: 'stem' | 'click' | 'guide'; gain: number; mute: boolean }[]
+  /** `bus` is an index into the rig's buses; `null` plays into the bus the rig gives the kind. */
+  tracks: { file: string; kind: 'stem' | 'click' | 'guide'; gain: number; mute: boolean; bus: number | null }[]
   sections: { name: string; startSample: number; endSample: number }[]
   markers: { sample: number; action: 'none' | 'stop' | 'loop' | 'next' }[]
 }
@@ -121,8 +127,18 @@ export interface EngineState {
   underruns: number
   /** Callback time over buffer time. */
   cpuLoad: number
-  /** Peak per track, linear. */
+  /** Peak per track after its fader, linear, 300 ms release. */
   meters: number[]
+  /** RMS per track, linear, 300 ms average. */
+  rms: number[]
+  /** Peak and RMS per bus after its fader. */
+  busMeters: number[]
+  busRms: number[]
+  /** Bus index each track plays into. */
+  trackBuses: number[]
+  /** Outputs of the open device. */
+  deviceChannels: number
+  /** Loudest left and right of any bus. */
   master: [number, number]
 }
 
@@ -143,6 +159,8 @@ export const engine = {
   clearNext: () => call<void>('engine_clear_next'),
   setOptions: (options: PerformOptions) => call<void>('engine_set_options', { options }),
   setPad: (file: string | null) => call<void>('engine_set_pad', { file }),
+  /** The rig's buses and their channels (`routingDoc` in `@stems/core`). */
+  setRouting: (routing: RoutingDoc) => call<void>('engine_set_routing', { routing }),
   /** Run a transport command now, or at `at` (a frame of the engine clock). */
   command: (command: Transport, at?: number) => call<void>('engine_command', { command, at: at ?? null }),
 }

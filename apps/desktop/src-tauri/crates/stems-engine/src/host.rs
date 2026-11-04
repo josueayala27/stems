@@ -15,6 +15,7 @@ use crate::device::{self, DeviceInfo, OpenedOutput, Output, OutputConfig};
 use crate::engine::{self, Built, Engine, PerformOptions, SongDoc, SongInfo, TransitionDoc};
 use crate::mixer::Mixer;
 use crate::pad::Pad;
+use crate::routing::{Routing, RoutingDoc};
 use crate::state::EngineState;
 use crate::EngineError;
 
@@ -40,6 +41,7 @@ enum Request {
     ClearNext(Reply<()>),
     SetOptions(PerformOptions, Reply<()>),
     SetPad(Option<PathBuf>, Reply<()>),
+    SetRouting(RoutingDoc, Reply<()>),
     Command(Option<u64>, Transport, Reply<()>),
     State(Reply<Option<EngineState>>),
 }
@@ -104,6 +106,11 @@ impl EngineHost {
     }
 
     /// Send a transport command, at once or at a frame of the engine clock.
+    /// The rig's buses and routing. Kept across device reopens.
+    pub fn set_routing(&self, doc: RoutingDoc) -> crate::Result<()> {
+        self.call(|reply| Request::SetRouting(doc, reply))
+    }
+
     pub fn command(&self, transport: Transport, at: Option<u64>) -> crate::Result<()> {
         self.call(|reply| Request::Command(at, transport, reply))
     }
@@ -123,6 +130,8 @@ struct Control {
     next: Option<(SongDoc, TransitionDoc)>,
     options: PerformOptions,
     pad: Option<PathBuf>,
+    /// The rig's routing, sent again to a new mixer after a sample-rate change.
+    routing: Option<RoutingDoc>,
     mixer_home: mpsc::Sender<Mixer>,
     mixers: mpsc::Receiver<Mixer>,
     /// The mixer while no stream holds it.
@@ -151,6 +160,7 @@ impl Control {
             next: None,
             options: PerformOptions::default(),
             pad: None,
+            routing: None,
             mixer_home,
             mixers,
             parked: None,
@@ -239,7 +249,18 @@ impl Control {
                     }
                 }
             }
+            Request::SetRouting(doc, reply) => {
+                let result = match self.engine.as_mut() {
+                    Some(engine) => engine.set_routing(&doc),
+                    None => Routing::from_doc(&doc).map(drop),
+                };
+                if result.is_ok() {
+                    self.routing = Some(doc);
+                }
+                let _ = reply.send(result);
+            }
             Request::Command(at, transport, reply) => {
+                self.remember(transport);
                 let result = match self.engine.as_mut() {
                     Some(engine) => engine.schedule(at.map_or(At::Now, At::Clock), Command::from(transport)),
                     None => Err(EngineError::NotOpen),
@@ -249,6 +270,24 @@ impl Control {
             Request::State(reply) => {
                 let _ = reply.send(Ok(self.engine.as_mut().map(Engine::state)));
             }
+        }
+    }
+
+    /// Keep bus fader moves in the stored routing, so a rebuilt mixer gets them back.
+    fn remember(&mut self, transport: Transport) {
+        let Some(routing) = self.routing.as_mut() else { return };
+        match transport {
+            Transport::BusGain { bus, gain } => {
+                if let Some(doc) = routing.buses.get_mut(bus) {
+                    doc.gain = gain;
+                }
+            }
+            Transport::BusMute { bus, muted } => {
+                if let Some(doc) = routing.buses.get_mut(bus) {
+                    doc.mute = muted;
+                }
+            }
+            _ => {}
         }
     }
 
@@ -331,6 +370,11 @@ impl Control {
                 // A new rate needs a new mixer, and the songs decoded again at that rate.
                 let (mut engine, mixer) = engine::new(rate);
                 let _ = engine.set_options(self.options.clone());
+                if let Some(doc) = &self.routing {
+                    if engine.set_routing(doc).is_err() {
+                        self.routing = None;
+                    }
+                }
                 if let Some(doc) = &self.song {
                     if engine.load_song(doc).is_err() {
                         self.song = None;

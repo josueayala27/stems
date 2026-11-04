@@ -13,6 +13,7 @@ use crate::decode::FileReader;
 use crate::guide::{self, Cue, GuideOptions, Voices};
 use crate::mixer::{Garbage, Mixer, SCHEDULE_CAPACITY};
 use crate::pad::Pad;
+use crate::routing::{Routing, RoutingDoc};
 use crate::sampler::Sampler;
 use crate::song::{Marker, MarkerAction, Song, Span, Timeline, TrackRole, TrackSpec};
 use crate::source::Source;
@@ -50,6 +51,9 @@ pub struct TrackDoc {
     pub gain: f32,
     #[serde(default)]
     pub mute: bool,
+    /// Bus index in the rig. `None` plays into the bus the rig gives the track's kind.
+    #[serde(default)]
+    pub bus: Option<usize>,
 }
 
 fn stem_role() -> TrackRole {
@@ -109,7 +113,7 @@ impl SongDoc {
             bpm: 120.0,
             time_signature: TimeSignature { numerator: 4, denominator: 4 },
             tempo_map: Vec::new(),
-            tracks: paths.iter().map(|file| TrackDoc { file: file.clone(), kind: TrackRole::Stem, gain: 1.0, mute: false }).collect(),
+            tracks: paths.iter().map(|file| TrackDoc { file: file.clone(), kind: TrackRole::Stem, gain: 1.0, mute: false, bus: None }).collect(),
             sections: Vec::new(),
             markers: Vec::new(),
         }
@@ -386,6 +390,12 @@ impl Engine {
         self.send(Command::Mute { track: guide_track, muted: !guide_options.enabled })
     }
 
+    /// Replace the rig's buses and routing. Every song, loaded or not, plays through it.
+    pub fn set_routing(&mut self, doc: &RoutingDoc) -> crate::Result<()> {
+        let routing = Routing::from_doc(doc)?;
+        self.send(Command::SetRouting(Box::new(routing)))
+    }
+
     /// Crossfade to a pad decoded from `file`, or fade the pad out with `None`.
     pub fn set_pad(&mut self, file: Option<&Path>) -> crate::Result<()> {
         let pad = file.map(|file| decode_pad(file, self.sample_rate)).transpose()?;
@@ -465,7 +475,7 @@ impl BuildJob {
         let mut tracks = Vec::with_capacity(doc.tracks.len());
         for (track, result) in doc.tracks.iter().zip(opened) {
             let (source, feeder, info) = result?;
-            specs.push(TrackSpec { source: Source::Stream(source), role: track.kind, gain: track.gain, muted: track.mute });
+            specs.push(TrackSpec { source: Source::Stream(source), role: track.kind, gain: track.gain, muted: track.mute, bus: track.bus });
             feeders.push(feeder);
             tracks.push(info);
         }
@@ -477,6 +487,7 @@ impl BuildJob {
             role: TrackRole::Click,
             gain: options.click.gain,
             muted: !options.click.enabled,
+            bus: None,
         });
         let guide_track = specs.len();
         specs.push(TrackSpec {
@@ -484,6 +495,7 @@ impl BuildJob {
             role: TrackRole::Guide,
             gain: options.guide.gain,
             muted: !options.guide.enabled,
+            bus: None,
         });
 
         let sections = doc
@@ -620,7 +632,7 @@ mod tests {
             bpm: 120.0,
             time_signature: TimeSignature { numerator: 4, denominator: 4 },
             tempo_map: Vec::new(),
-            tracks: vec![TrackDoc { file: dir.join("keys.wav"), kind: TrackRole::Stem, gain: 1.0, mute: false }],
+            tracks: vec![TrackDoc { file: dir.join("keys.wav"), kind: TrackRole::Stem, gain: 1.0, mute: false, bus: None }],
             sections: vec![SectionDoc { name: "Verse".into(), start_sample: 88_200, end_sample: 264_600 }],
             markers: vec![MarkerDoc { sample: 352_800, action: MarkerAction::Stop }],
         };

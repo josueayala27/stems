@@ -1,15 +1,44 @@
 // The app's one player. It opens the default output on first use, loads songs or a setlist into
 // the engine, keeps the next setlist song prepared, follows the engine as it advances, and sends
 // live actions. The engine is the clock: this only sends commands and mirrors engine state.
-import type { Setlist, Song } from '@stems/schema'
+import { busIndex, defaultRig, routingDoc } from '@stems/core'
+import type { Rig, Setlist, Song } from '@stems/schema'
 import { computed, onScopeDispose, ref, shallowRef } from 'vue'
 import { isTauri } from '~/data/db'
-import { engine, ENGINE_STATE_EVENT, type EngineState, type OpenedOutput, type Quantize, type Transport } from './engine'
+import { listRigs, loadCurrentRig, saveRig, setCurrentRigId } from '~/data/rigs'
+import { saveSong } from '~/data/songs'
+import {
+  engine,
+  ENGINE_STATE_EVENT,
+  type DeviceInfo,
+  type EngineState,
+  type OpenedOutput,
+  type OutputConfig,
+  type Quantize,
+  type Transport,
+} from './engine'
 import { onOptionsChange, usePerformOptions } from './options'
 import { padAt, songDoc, toEngine, transitionDoc } from './songDoc'
 
-/** Buffer for the default output until the rig picks one (M4). */
+/** Buffer for the default output before a rig exists. */
 export const DEFAULT_BUFFER = 256
+/** Fader moves are saved this long after the last one. */
+const SAVE_DELAY_MS = 400
+
+export function outputConfig(rig: Rig): OutputConfig {
+  return { deviceId: rig.deviceId, sampleRate: rig.sampleRate, bufferSize: rig.bufferSize }
+}
+
+/** True when the device, rate or buffer differ, so the output must reopen. */
+export function deviceChanged(previous: Rig | null, next: Rig): boolean {
+  return !previous || previous.deviceId !== next.deviceId || previous.sampleRate !== next.sampleRate || previous.bufferSize !== next.bufferSize
+}
+
+/** True when bus names or their order differ, so track bus indexes must be sent again. */
+export function busesChanged(previous: Rig | null, next: Rig): boolean {
+  if (!previous || previous.buses.length !== next.buses.length) return true
+  return previous.buses.some((bus, index) => bus.name !== next.buses[index]?.name)
+}
 
 export interface Span {
   name: string
@@ -76,6 +105,22 @@ const tags = new Map<number, number>()
 let lastTag = 0
 let currentPad: string | null = null
 let listening: Promise<void> | null = null
+const rig = shallowRef<Rig | null>(null)
+const rigs = shallowRef<Rig[]>([])
+const devices = shallowRef<DeviceInfo[]>([])
+const saveTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+/** Run `save` once, `SAVE_DELAY_MS` after the last call with this key. */
+function saveLater(key: string, save: () => Promise<void>) {
+  clearTimeout(saveTimers.get(key))
+  saveTimers.set(
+    key,
+    setTimeout(() => {
+      saveTimers.delete(key)
+      save().catch((cause) => (error.value = `Could not save: ${cause}`))
+    }, SAVE_DELAY_MS),
+  )
+}
 
 const song = computed(() => songs.value[index.value] ?? null)
 const nextSong = computed(() => (nextIndex.value === null ? null : (songs.value[nextIndex.value] ?? null)))
@@ -115,7 +160,7 @@ async function prepareFollowing() {
   const item = list?.items[following]
   const target = songs.value[following]
   if (list && item && target) {
-    const info = await engine.prepareNext(songDoc(target), transitionDoc(item))
+    const info = await engine.prepareNext(songDoc(target, rig.value), transitionDoc(item))
     tags.set(info.tag, following)
     nextIndex.value = following
   } else {
@@ -165,9 +210,26 @@ function listenOnce(): Promise<void> {
   return listening ?? Promise.resolve()
 }
 
+/** Open the rig's device, or the default output (creating a rig for it) when there is no rig yet. */
 async function ensureOutput(): Promise<OpenedOutput> {
   if (output.value) return output.value
-  output.value = await engine.open({ deviceId: null, sampleRate: null, bufferSize: DEFAULT_BUFFER })
+  let current = rig.value ?? (await loadCurrentRig())
+  if (current) {
+    try {
+      output.value = await engine.open(outputConfig(current))
+    } catch (cause) {
+      // The rig's device is missing: play through the default output and say so.
+      output.value = await engine.open({ deviceId: null, sampleRate: null, bufferSize: current.bufferSize })
+      error.value = `${current.device || 'The rig device'} is unavailable (${cause}). Playing through ${output.value.name}.`
+    }
+  } else {
+    output.value = await engine.open({ deviceId: null, sampleRate: null, bufferSize: DEFAULT_BUFFER })
+    current = { ...defaultRig(output.value.channels), device: output.value.name }
+    await saveRig(current)
+  }
+  setCurrentRigId(current.id)
+  rig.value = current
+  await engine.setRouting(routingDoc(current))
   const options = usePerformOptions()
   await engine.setOptions(structuredClone({ click: { ...options.click }, guide: { ...options.guide } }))
   return output.value
@@ -181,7 +243,7 @@ async function loadAt(at: number): Promise<void> {
   await run(async () => {
     await listenOnce()
     await ensureOutput()
-    const info = await engine.loadSong(songDoc(target))
+    const info = await engine.loadSong(songDoc(target, rig.value))
     tags.set(info.tag, at)
     lastTag = info.tag
     index.value = at
@@ -193,6 +255,53 @@ async function loadAt(at: number): Promise<void> {
 }
 
 const send = (command: Transport) => run(() => engine.command(command))
+
+/** Send every loaded track its bus again, after buses were added, removed, renamed or reordered. */
+async function resyncTrackBuses() {
+  const current = rig.value
+  const target = song.value
+  if (current && target && state.value?.loaded) {
+    for (const [track, entry] of target.tracks.entries()) {
+      await engine.command({ type: 'trackBus', track, bus: busIndex(current, entry.defaultBus) })
+    }
+  }
+  await prepareFollowing()
+}
+
+/** Use `next` as the rig: save it, reopen the device if it changed, and send the routing. */
+async function applyRig(next: Rig): Promise<void> {
+  const previous = rig.value
+  rig.value = next
+  rigs.value = rigs.value.some((entry) => entry.id === next.id) ? rigs.value.map((entry) => (entry.id === next.id ? next : entry)) : [next, ...rigs.value]
+  saveLater(`rig:${next.id}`, () => saveRig(next))
+  if (!output.value) return
+  await run(async () => {
+    if (deviceChanged(previous, next)) output.value = await engine.open(outputConfig(next))
+    await engine.setRouting(routingDoc(next))
+    if (busesChanged(previous, next) || previous?.id !== next.id) await resyncTrackBuses()
+  })
+}
+
+/** Replace a track in the current song and save the song shortly after. */
+function editTrack(track: number, patch: Partial<Song['tracks'][number]>) {
+  const target = song.value
+  if (!target?.tracks[track]) return
+  const updated = { ...target, tracks: target.tracks.map((entry, i) => (i === track ? { ...entry, ...patch } : entry)) }
+  songs.value = songs.value.map((entry) => (entry.id === updated.id ? updated : entry))
+  saveLater(`song:${updated.id}`, () => saveSong(updated))
+}
+
+function editBus(name: string, patch: { gain?: number; mute?: boolean }) {
+  const current = rig.value
+  const bus = current ? busIndex(current, name) : null
+  if (!current || bus === null) return Promise.resolve()
+  const next = { ...current, buses: current.buses.map((entry) => (entry.name === name ? { ...entry, ...patch } : entry)) }
+  rig.value = next
+  rigs.value = rigs.value.map((entry) => (entry.id === next.id ? next : entry))
+  saveLater(`rig:${next.id}`, () => saveRig(next))
+  if (!output.value) return Promise.resolve()
+  return patch.gain !== undefined ? send({ type: 'busGain', bus, gain: patch.gain }) : send({ type: 'busMute', bus, muted: patch.mute ?? false })
+}
 
 function startPlaying() {
   const options = usePerformOptions()
@@ -223,6 +332,45 @@ export function usePlayer() {
     locked,
     muted,
     soloed,
+    rig,
+    rigs,
+    devices,
+
+    /** Open the output if needed, then list devices and rigs (the Settings page). */
+    refreshDevices: () =>
+      run(async () => {
+        await listenOnce()
+        await ensureOutput()
+        devices.value = await engine.devices()
+        rigs.value = await listRigs()
+      }),
+    applyRig,
+    /** Switch to another saved rig. */
+    selectRig: async (id: string) => {
+      const next = rigs.value.find((entry) => entry.id === id)
+      if (!next) return
+      setCurrentRigId(id)
+      await applyRig(next)
+    },
+    /** A new rig for the open device, made current. */
+    newRig: async () => {
+      const channels = output.value?.channels ?? 2
+      const created = { ...defaultRig(channels), name: `Rig ${rigs.value.length + 1}`, device: output.value?.name ?? '', deviceId: rig.value?.deviceId ?? null }
+      setCurrentRigId(created.id)
+      await applyRig(created)
+    },
+    setBusGain: (name: string, gain: number) => editBus(name, { gain }),
+    setBusMute: (name: string, mute: boolean) => editBus(name, { mute }),
+    /** Track fader: sent at once, saved to the song shortly after. */
+    setTrackGain: (track: number, gain: number) => {
+      editTrack(track, { gain })
+      return send({ type: 'gain', track, gain })
+    },
+    /** Move a track to another bus of the rig; saved to the song as its `defaultBus`. */
+    setTrackBus: (track: number, name: string) => {
+      editTrack(track, { defaultBus: name })
+      return send({ type: 'trackBus', track, bus: rig.value ? busIndex(rig.value, name) : null })
+    },
 
     /** Play one song on its own (no setlist). */
     play: async (single?: Song) => {
