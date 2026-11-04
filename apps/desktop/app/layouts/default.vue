@@ -63,6 +63,7 @@ const skip = css({
   <div :class="shell">
     <a href="#main" :class="skip">Skip to content</a>
     <AppToolbar />
+    <TransportBar />
     <div :class="body">
       <aside :class="[sidebar, collapsed ? sidebarCollapsed : '']" aria-label="Workspace navigation">
         <div :class="nav"><AppSidebar :collapsed="collapsed" /></div>
@@ -80,7 +81,6 @@ const skip = css({
         <div :key="route.path" :class="page"><slot><NuxtPage /></slot></div>
       </main>
     </div>
-    <TransportBar />
   </div>
 </template>
 

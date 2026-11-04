@@ -146,8 +146,8 @@ function itemState(at: number): 'current' | 'next' | 'played' | null {
   return at < player.index.value ? 'played' : null
 }
 
-const root = css({ display: 'grid', gridTemplateColumns: '[260px 1fr]', gridTemplateRows: '[1fr auto]', h: 'full', minH: '0' })
-const rail = css({ gridRow: '1', gridColumn: '1', minH: '0' })
+const root = css({ display: 'grid', gridTemplateColumns: '[260px 1fr]', gridTemplateRows: '[auto minmax(0, 1fr)]', h: 'full', minH: '0' })
+const rail = css({ gridRow: '2', gridColumn: '1', minH: '0' })
 const railBody = css({ display: 'flex', flexDirection: 'column', gap: '2', p: '3', minH: '0', overflowY: 'auto' })
 const railItem = css({
   display: 'grid',
@@ -168,34 +168,36 @@ const railItem = css({
 const railNumber = css({ color: 'fg.subtle', fontVariantNumeric: 'tabular-nums', textAlign: 'right' })
 const railTitle = css({ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' })
 const warning = css({ textStyle: 'ui.xs', color: 'warning.default' })
-const stage = css({ gridRow: '1', gridColumn: '2', display: 'flex', flexDirection: 'column', minW: '0', minH: '0', bg: 'bg.canvas' })
+const stage = css({ gridRow: '2', gridColumn: '2', display: 'flex', flexDirection: 'column', minW: '0', minH: '0', bg: 'bg.canvas' })
 const center = css({ flex: '1', display: 'grid', placeItems: 'center' })
 const transport = css({
-  gridRow: '2',
+  gridRow: '1',
   gridColumn: '1 / -1',
   display: 'flex',
   alignItems: 'center',
-  gap: '3',
-  minH: '[80px]',
-  px: '4',
-  py: '2',
-  flexWrap: 'wrap',
+  gap: '2',
+  h: '[60px]',
+  px: '3',
+  flexWrap: 'nowrap',
+  overflow: 'hidden',
   bg: 'bg.panel',
-  borderTopWidth: '1px',
+  borderBottomWidth: '1px',
   borderColor: 'border.default',
 })
+const divider = css({ w: '[1px]', h: '[28px]', bg: 'border.default', mx: '1', flexShrink: '0' })
 const group = css({ display: 'flex', alignItems: 'center', gap: '2' })
 const groupLabel = css({ textStyle: 'ui.label', color: 'fg.subtle', textTransform: 'uppercase' })
 const spacer = css({ flex: '1' })
-const level = css({ display: 'flex', alignItems: 'center', gap: '2', w: '[150px]' })
-const readout = css({ display: 'flex', flexDirection: 'column', minW: '[96px]' })
+const level = css({ display: 'flex', alignItems: 'center', gap: '1.5', w: '[150px]', flexShrink: '1', minW: '[96px]' })
+const readout = css({ display: 'flex', flexDirection: 'column', minW: '[96px]', flexShrink: '0', px: '2', py: '1', borderRadius: 'md', bg: 'bg.input' })
 const readoutBig = css({ fontFamily: 'mono', textStyle: 'ui.title', color: 'fg.default', fontVariantNumeric: 'tabular-nums' })
 const readoutSmall = css({ fontFamily: 'mono', textStyle: 'ui.xs', color: 'fg.subtle', fontVariantNumeric: 'tabular-nums' })
 const playButton = css({
   display: 'grid',
   placeItems: 'center',
-  w: '[56px]',
-  h: '[56px]',
+  w: '[44px]',
+  h: '[44px]',
+  flexShrink: '0',
   borderRadius: 'full',
   background: '[token(gradients.sheen), token(colors.accent.default)]',
   color: 'accent.fg',
@@ -235,15 +237,7 @@ const errorText = css({ textStyle: 'ui.xs', color: 'danger.default', maxW: '[320
       </Panel>
     </div>
 
-    <section :class="stage" aria-label="Song">
-      <SectionStrip />
-      <TrackLanes v-if="player.song.value" />
-      <div v-else :class="center">
-        <EmptyState icon="lucide:audio-waveform" title="No song loaded" description="Choose a setlist, or play a song from Songs." />
-      </div>
-    </section>
-
-    <footer :class="transport" aria-label="Transport">
+    <header :class="transport" aria-label="Transport">
       <button
         type="button"
         :class="playButton"
@@ -253,19 +247,20 @@ const errorText = css({ textStyle: 'ui.xs', color: 'danger.default', maxW: '[320
       >
         <Icon :name="player.playing.value ? 'lucide:pause' : 'lucide:play'" :size="24" aria-hidden="true" />
       </button>
-      <IconButton icon="lucide:square" label="Stop and return to start" size="lg" :disabled="!player.song.value" @click="player.stop()" />
+      <IconButton icon="lucide:square" label="Stop and return to start" size="md" :disabled="!player.song.value" @click="player.stop()" />
       <IconButton
         icon="lucide:repeat"
         label="Vamp this section (L, or hold V)"
-        size="lg"
+        size="md"
         :active="player.state.value?.vamping ?? false"
         :disabled="!player.song.value"
         @click="player.toggleVamp()"
       />
-      <IconButton icon="lucide:circle-stop" label="Stop at end of section (S)" size="lg" :disabled="!player.playing.value" @click="player.stopAtSectionEnd()" />
-      <IconButton icon="lucide:chevrons-right" label="Skip next section (K)" size="lg" :disabled="!player.playing.value" @click="player.skipNextSection()" />
-      <IconButton icon="lucide:skip-forward" label="Next song (N)" size="lg" :disabled="player.nextIndex.value === null" @click="player.nextSongNow()" />
+      <IconButton icon="lucide:circle-stop" label="Stop at end of section (S)" size="md" :disabled="!player.playing.value" @click="player.stopAtSectionEnd()" />
+      <IconButton icon="lucide:chevrons-right" label="Skip next section (K)" size="md" :disabled="!player.playing.value" @click="player.skipNextSection()" />
+      <IconButton icon="lucide:skip-forward" label="Next song (N)" size="md" :disabled="player.nextIndex.value === null" @click="player.nextSongNow()" />
 
+      <span :class="divider" />
       <div :class="readout">
         <span :class="readoutBig">{{ barBeat }}</span>
         <span :class="readoutSmall">{{ formatFrames(smooth, player.sampleRate.value) }} / {{ formatFrames(player.length.value, player.sampleRate.value) }}</span>
@@ -282,31 +277,40 @@ const errorText = css({ textStyle: 'ui.xs', color: 'danger.default', maxW: '[320
       </div>
       <div :class="level">
         <IconButton
-          :icon="options.click.enabled ? 'lucide:metronome' : 'lucide:volume-x'"
-          label="Click on or off"
+          icon="lucide:metronome"
+          :label="options.click.enabled ? 'Click on: turn off' : 'Click off: turn on'"
           size="sm"
           :active="options.click.enabled"
           @click="options.click.enabled = !options.click.enabled"
         />
-        <Slider v-model="clickLevel" :min="0" :max="100" aria-label="Click level" />
+        <Slider v-model="clickLevel" :min="0" :max="100" :disabled="!options.click.enabled" aria-label="Click level" />
       </div>
       <div :class="level">
         <IconButton
-          :icon="options.guide.enabled ? 'lucide:message-square' : 'lucide:volume-x'"
-          label="Guide on or off"
+          icon="lucide:message-square"
+          :label="options.guide.enabled ? 'Guide on: turn off' : 'Guide off: turn on'"
           size="sm"
           :active="options.guide.enabled"
           @click="options.guide.enabled = !options.guide.enabled"
         />
-        <Slider v-model="guideLevel" :min="0" :max="100" aria-label="Guide level" />
+        <Slider v-model="guideLevel" :min="0" :max="100" :disabled="!options.guide.enabled" aria-label="Guide level" />
       </div>
+      <span :class="divider" />
       <IconButton
         :icon="player.locked.value ? 'lucide:lock' : 'lucide:lock-open'"
         :label="player.locked.value ? 'Unlock editing (P)' : 'Lock for performance (P)'"
-        size="lg"
+        size="md"
         :active="player.locked.value"
         @click="player.locked.value = !player.locked.value"
       />
-    </footer>
+    </header>
+    <section :class="stage" aria-label="Song">
+      <SectionStrip />
+      <TrackLanes v-if="player.song.value" />
+      <div v-else :class="center">
+        <EmptyState icon="lucide:audio-waveform" title="No song loaded" description="Choose a setlist, or play a song from Songs." />
+      </div>
+    </section>
+
   </div>
 </template>

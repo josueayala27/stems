@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// Play, pause, stop and seek for the loaded song. Shown at the bottom of the shell once a song is loaded.
+// Play, pause, stop and seek for the loaded song. Shown under the toolbar once a song is loaded.
 import { css } from 'styled-system/css'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
@@ -55,7 +55,7 @@ const bar = css({
   px: '3',
   flexShrink: '0',
   bg: 'bg.panel',
-  borderTopWidth: '1px',
+  borderBottomWidth: '1px',
   borderColor: 'border.default',
 })
 const title = css({ textStyle: 'ui.sm', color: 'fg.default', w: '[180px]', flexShrink: '0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' })
