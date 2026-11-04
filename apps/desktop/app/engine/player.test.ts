@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { songFromImport } from '~/data/importSong'
 import type { EngineState } from './engine'
-import { engineSections, sectionIndexAt, skipTarget, slowFieldsChanged, type Span } from './player'
+import { defaultRig } from '@stems/core'
+import { busesChanged, deviceChanged, engineSections, outputConfig, sectionIndexAt, skipTarget, slowFieldsChanged, type Span } from './player'
 
 const sections: Span[] = [
   { name: 'Intro', start: 0, end: 100 },
@@ -44,5 +45,26 @@ describe('slowFieldsChanged', () => {
     expect(slowFieldsChanged(base, { ...base, position: 480, clock: 480, meters: [0.5], cpuLoad: 0.2 })).toBe(false)
     expect(slowFieldsChanged(base, { ...base, playing: false })).toBe(true)
     expect(slowFieldsChanged(base, { ...base, armed: 'jump' })).toBe(true)
+  })
+})
+
+describe('rig changes', () => {
+  const rig = defaultRig(16, () => 'id')
+
+  it('reopens the device only when the device, rate or buffer change', () => {
+    expect(deviceChanged(null, rig)).toBe(true)
+    expect(deviceChanged(rig, { ...rig, name: 'Renamed' })).toBe(false)
+    expect(deviceChanged(rig, { ...rig, bufferSize: 128 })).toBe(true)
+    expect(deviceChanged(rig, { ...rig, deviceId: 'usb' })).toBe(true)
+  })
+
+  it('resends track buses when bus names or order change', () => {
+    expect(busesChanged(rig, { ...rig, buses: rig.buses.map((bus) => ({ ...bus, gain: 0.5 })) })).toBe(false)
+    expect(busesChanged(rig, { ...rig, buses: [...rig.buses].reverse() })).toBe(true)
+    expect(busesChanged(rig, { ...rig, buses: rig.buses.slice(1) })).toBe(true)
+  })
+
+  it('opens the rig device at its rate and buffer', () => {
+    expect(outputConfig({ ...rig, deviceId: 'usb', sampleRate: 96_000, bufferSize: 128 })).toEqual({ deviceId: 'usb', sampleRate: 96_000, bufferSize: 128 })
   })
 })
