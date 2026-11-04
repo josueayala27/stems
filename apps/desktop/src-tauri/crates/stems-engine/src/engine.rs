@@ -733,6 +733,7 @@ mod tests {
             markers: vec![MarkerDoc { sample: 352_800, action: MarkerAction::Stop }],
             timecode_start: Some("03:00:00:00".into()),
             events: vec![EventDoc { sample: 44_100, action: MidiAction::MidiNote { channel: 10, note: 36, velocity: 100 } }],
+            start_sample: 0,
         };
         let (mut engine, _mixer) = new(48_000);
         let Built { song, info, .. } = engine.build_job(&doc).run().unwrap();

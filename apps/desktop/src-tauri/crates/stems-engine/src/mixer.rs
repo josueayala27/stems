@@ -1657,4 +1657,25 @@ mod tests {
         run(&mut mixer, 3 * BAR - 10);
         assert_eq!(programs(&mut queue), [5, 5, 5]);
     }
+
+    // ── Song start point ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn a_start_point_skips_leading_audio_and_keeps_positions_song_relative() {
+        let (mut engine, mut mixer) = engine::new(RATE);
+        let mut stem = TrackSpec::stem(Source::memory(index_track(10_000)));
+        stem.offset = 1_000;
+        let click = TrackSpec::with_role(Source::memory(vec![0.0; 9_000 * CHANNELS]), TrackRole::Click, 1.0);
+        engine.send(Command::LoadSong(Box::new(Song::build(1, vec![stem, click], Timeline::plain(RATE)).unwrap()))).unwrap();
+        engine.send(Command::Play).unwrap();
+        let out = left(&render_no_alloc(&mut mixer, 100, 100));
+        assert_eq!(out[0], 1_000.0, "song frame 0 is file frame 1 000");
+        assert_eq!(engine.state().length, 9_000);
+        engine.send(Command::Stop).unwrap();
+        render_no_alloc(&mut mixer, 512, 512);
+        engine.send(Command::Seek(5_000)).unwrap();
+        engine.send(Command::Play).unwrap();
+        let out = left(&render_no_alloc(&mut mixer, 10, 10));
+        assert_eq!(out[0], 6_000.0);
+    }
 }
