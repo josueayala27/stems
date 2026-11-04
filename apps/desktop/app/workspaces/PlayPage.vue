@@ -7,7 +7,7 @@ import { css } from 'styled-system/css'
 import { Icon, NuxtLink } from '#components'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { Badge, Button, EmptyState, IconButton, Panel, SegmentedControl, Select, Slider, type SegmentOption, type SelectOption } from '~/ui'
+import { Badge, Button, EmptyState, IconButton, Panel, Popover, SegmentedControl, Select, Slider, type SegmentOption, type SelectOption } from '~/ui'
 import { getSetlist, listSetlists, type SetlistSummary } from '~/data/setlists'
 import { getSong } from '~/data/songs'
 import { formatFrames, type Quantize } from '~/engine/engine'
@@ -17,6 +17,7 @@ import { fromEngine } from '~/engine/songDoc'
 import SectionStrip from './play/SectionStrip.vue'
 import TrackLanes from './play/TrackLanes.vue'
 import ResizeHandle from '~/shell/ResizeHandle.vue'
+import ControlsPanel from './play/ControlsPanel.vue'
 import { usePanel } from '~/shell/panel'
 
 const route = useRoute()
@@ -313,6 +314,12 @@ const errorText = css({ textStyle: 'ui.xs', color: 'danger.default', maxW: '[320
         <div :class="[levelSlider, tightHide]"><Slider v-model="guideLevel" :min="0" :max="100" :disabled="!options.guide.enabled" aria-label="Guide level" /></div>
       </div>
       <span :class="divider" />
+      <Popover placement="bottom-end">
+        <template #trigger="{ props }">
+          <IconButton v-bind="props" icon="lucide:footprints" label="Footswitches and controllers" size="md" :active="!!player.rig.value?.controls.length" />
+        </template>
+        <ControlsPanel />
+      </Popover>
       <IconButton
         :icon="player.locked.value ? 'lucide:lock' : 'lucide:lock-open'"
         :label="player.locked.value ? 'Unlock editing (P)' : 'Lock for performance (P)'"

@@ -124,6 +124,34 @@ impl MidiOut {
     }
 }
 
+/// Names of the MIDI input ports.
+pub fn input_ports() -> Result<Vec<String>, MidiError> {
+    let input = midir::MidiInput::new("Stems").map_err(error)?;
+    Ok(input.ports().iter().filter_map(|port| input.port_name(port).ok()).collect())
+}
+
+/// An open MIDI input. Each message goes to the callback on the MIDI driver's thread; dropping
+/// the value closes the port.
+pub struct MidiIn {
+    _connection: midir::MidiInputConnection<()>,
+    pub name: String,
+}
+
+impl MidiIn {
+    pub fn connect(name: &str, mut on_message: impl FnMut(&[u8]) + Send + 'static) -> Result<Self, MidiError> {
+        let mut input = midir::MidiInput::new("Stems").map_err(error)?;
+        // Clock, active sensing and SysEx are not controls.
+        input.ignore(midir::Ignore::All);
+        let port = input
+            .ports()
+            .into_iter()
+            .find(|port| input.port_name(port).is_ok_and(|port_name| port_name == name))
+            .ok_or_else(|| MidiError(format!("MIDI port {name} not found")))?;
+        let connection = input.connect(&port, "Stems in", move |_, message, _| on_message(message), ()).map_err(error)?;
+        Ok(Self { _connection: connection, name: name.to_string() })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

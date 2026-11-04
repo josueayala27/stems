@@ -140,7 +140,7 @@ export function routingWarnings(rig: Rig, deviceChannels = Number.POSITIVE_INFIN
 
 /** A starting rig for a device: FOH and IEM pairs on four outputs or more, one main pair otherwise. */
 export function defaultRig(deviceChannels: number, newId: () => string = () => crypto.randomUUID()): Rig {
-  const base = { id: newId(), name: 'Default rig', device: '', deviceId: null, sampleRate: null, bufferSize: 256 as const, timecodeBus: null, midiOutput: null }
+  const base = { id: newId(), name: 'Default rig', device: '', deviceId: null, sampleRate: null, bufferSize: 256 as const, timecodeBus: null, midiOutput: null, midiInput: null, controls: [] }
   if (deviceChannels >= 4) {
     return {
       ...base,

@@ -38,6 +38,21 @@ export const bufferSizeSchema = z.union([
   z.literal(2048),
 ])
 
+/** What a footswitch or controller does. */
+export const controlActionSchema = z.enum(['playPause', 'stop', 'vamp', 'nextSection', 'previousSection', 'skipSection', 'stopAtSectionEnd', 'nextSong', 'cancel'])
+export type ControlAction = z.infer<typeof controlActionSchema>
+
+/** The MIDI message that fires a control. `channel: null` matches any channel. */
+export const controlTriggerSchema = z.object({
+  kind: z.enum(['note', 'cc', 'program']),
+  channel: z.number().int().min(1).max(16).nullable(),
+  number: z.number().int().min(0).max(127),
+})
+export type ControlTrigger = z.infer<typeof controlTriggerSchema>
+
+export const controlBindingSchema = z.object({ action: controlActionSchema, trigger: controlTriggerSchema })
+export type ControlBinding = z.infer<typeof controlBindingSchema>
+
 /** The audio setup a show runs on. Routing belongs to the rig, not the song. */
 export const rigSchema = z
   .object({
@@ -60,6 +75,9 @@ export const rigSchema = z
     timecodeBus: z.string().nullable().default(null),
     /** MIDI port for song cue events (`Stems` is the virtual source on macOS). `null`: no MIDI out. */
     midiOutput: z.string().nullable().default(null),
+    /** MIDI port footswitches and controllers come in on. */
+    midiInput: z.string().nullable().default(null),
+    controls: z.array(controlBindingSchema).default([]),
   })
   .superRefine((rig, ctx) => {
     const names = new Set<string>()

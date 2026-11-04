@@ -189,6 +189,9 @@ export const engine = {
   setPad: (file: string | null) => call<void>('engine_set_pad', { file }),
   /** MIDI output port names; on macOS the first is the virtual `Stems` source. */
   midiOutputs: () => call<string[]>('midi_outputs'),
+  midiInputs: () => call<string[]>('midi_inputs'),
+  /** Listen to footswitches and controllers on `port` (`midi://input` events), or stop with `null`. */
+  setMidiInput: (port: string | null) => call<void>('midi_set_input', { port }),
   /** Send song cue events to `port`, or nowhere with `null`. */
   setMidiOutput: (port: string | null) => call<void>('midi_set_output', { port }),
   /** The rig's buses and their channels (`routingDoc` in `@stems/core`). */

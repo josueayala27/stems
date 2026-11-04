@@ -96,6 +96,31 @@ async fn midi_set_output(host: State<'_, EngineHost>, port: Option<String>) -> R
     blocking(move || host.set_midi_output(port).map_err(|error| error.to_string())).await
 }
 
+/// The open MIDI input (footswitches and controllers). Messages reach the UI as `midi://input`.
+#[derive(Default)]
+struct MidiInput(std::sync::Mutex<Option<stems_control::midi::MidiIn>>);
+
+#[tauri::command]
+async fn midi_inputs() -> Result<Vec<String>, String> {
+    blocking(|| stems_control::midi::input_ports().map_err(|error| error.to_string())).await
+}
+
+/// Listen to `port` (or stop with `null`). Every message is emitted as `midi://input` with its bytes.
+#[tauri::command]
+async fn midi_set_input(app: tauri::AppHandle, input: State<'_, MidiInput>, port: Option<String>) -> Result<(), String> {
+    let mut slot = input.0.lock().map_err(|error| error.to_string())?;
+    *slot = None;
+    if let Some(name) = port {
+        let handle = app.clone();
+        let connection = stems_control::midi::MidiIn::connect(&name, move |message| {
+            let _ = handle.emit("midi://input", message.to_vec());
+        })
+        .map_err(|error| error.to_string())?;
+        *slot = Some(connection);
+    }
+    Ok(())
+}
+
 /// A transport command, now or at `at` (a frame of the engine clock).
 #[tauri::command]
 async fn engine_command(host: State<'_, EngineHost>, command: Transport, at: Option<u64>) -> Result<(), String> {
@@ -166,6 +191,7 @@ pub fn run() {
                 let _ = handle.emit("engine://state", StateEvent::from(state));
             })?;
             app.manage(host);
+            app.manage(MidiInput::default());
             // Copies and peak files live next to the database in the app data folder.
             app.manage(Library::new(app.path().app_data_dir()?.join("library")));
             Ok(())
@@ -183,6 +209,8 @@ pub fn run() {
             engine_set_routing,
             midi_outputs,
             midi_set_output,
+            midi_inputs,
+            midi_set_input,
             engine_command,
             library_plan_import,
             library_import,

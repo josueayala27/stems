@@ -1,8 +1,8 @@
 // The app's one player. It opens the default output on first use, loads songs or a setlist into
 // the engine, keeps the next setlist song prepared, follows the engine as it advances, and sends
 // live actions. The engine is the clock: this only sends commands and mirrors engine state.
-import { busIndex, defaultRig, routingDoc } from '@stems/core'
-import type { Rig, Setlist, Song } from '@stems/schema'
+import { actionFor, bind, busIndex, defaultRig, parsePress, routingDoc, triggerFor, type MidiPress } from '@stems/core'
+import type { ControlAction, Rig, Setlist, Song } from '@stems/schema'
 import { computed, onScopeDispose, ref, shallowRef } from 'vue'
 import { isTauri } from '~/data/db'
 import { listRigs, loadCurrentRig, saveRig, setCurrentRigId } from '~/data/rigs'
@@ -109,6 +109,19 @@ const rig = shallowRef<Rig | null>(null)
 const rigs = shallowRef<Rig[]>([])
 const devices = shallowRef<DeviceInfo[]>([])
 const midiPorts = shallowRef<string[]>([])
+const midiInputs = shallowRef<string[]>([])
+/** The action waiting for a footswitch press to bind (learn mode). */
+const learning = ref<ControlAction | null>(null)
+/** The last press heard, for the Controls panel. */
+const lastPress = shallowRef<MidiPress | null>(null)
+
+async function applyMidiInput(port: string | null) {
+  try {
+    await engine.setMidiInput(port)
+  } catch (cause) {
+    error.value = `MIDI in unavailable: ${cause}`
+  }
+}
 
 /** Open the rig's MIDI port. A missing port is reported, not fatal: audio plays on. */
 async function applyMidi(port: string | null) {
@@ -209,8 +222,10 @@ function listenOnce(): Promise<void> {
           }
         }),
       )
-      .then(() => {
+      .then(async () => {
         onOptionsChange((options) => void engine.setOptions(options).catch(() => {}))
+        const { listen } = await import('@tauri-apps/api/event')
+        await listen<number[]>('midi://input', (event) => onMidiInput(event.payload))
       })
       .catch((cause) => {
         listening = null
@@ -241,6 +256,7 @@ async function ensureOutput(): Promise<OpenedOutput> {
   rig.value = current
   await engine.setRouting(routingDoc(current))
   if (current.midiOutput) await applyMidi(current.midiOutput)
+  if (current.midiInput) await applyMidiInput(current.midiInput)
   const options = usePerformOptions()
   await engine.setOptions(snapshotOptions(options))
   return output.value
@@ -272,6 +288,58 @@ function timecodeStart(at: number): string | null {
   return setlist.value && usePerformOptions().timecode.hourPerSong ? songHour(at) : null
 }
 
+// ── Transport actions shared by the keyboard, the buttons and footswitches ──────────────────
+
+function jumpToSection(at: number) {
+  const target = sections.value[at]
+  if (!target) return Promise.resolve()
+  return playing.value
+    ? send({ type: 'arm', action: { type: 'jump', to: target.start }, quantize: quantize.value })
+    : send({ type: 'seek', position: target.start })
+}
+const toggleVamp = () => send(state.value?.vamping ? { type: 'releaseVamp' } : { type: 'arm', action: { type: 'vamp' }, quantize: 'now' })
+const stopAtSectionEnd = () => send({ type: 'arm', action: { type: 'stop' }, quantize: 'section' })
+function skipNextSection() {
+  const target = skipTarget(sections.value, position.value)
+  return target ? send({ type: 'arm', action: { type: 'jump', to: target.start }, quantize: 'section' }) : Promise.resolve()
+}
+const nextSongNow = () => (nextIndex.value === null ? Promise.resolve() : send({ type: 'advance', play: playing.value }))
+const togglePlay = () => (playing.value ? send({ type: 'stop' }) : startPlaying())
+const stopToStart = () =>
+  run(async () => {
+    await engine.command({ type: 'stop' })
+    await engine.command({ type: 'seek', position: 0 })
+  })
+
+const CONTROL: Record<ControlAction, () => Promise<void>> = {
+  playPause: togglePlay,
+  stop: stopToStart,
+  vamp: toggleVamp,
+  nextSection: () => jumpToSection(Math.max(0, sectionIndex.value + 1)),
+  previousSection: () => jumpToSection(Math.max(0, sectionIndex.value - 1)),
+  skipSection: skipNextSection,
+  stopAtSectionEnd,
+  nextSong: nextSongNow,
+  cancel: () => send({ type: 'cancelArmed' }),
+}
+
+/** A MIDI message from the input: learn it, or run the action bound to it. The lock never blocks it. */
+function onMidiInput(bytes: number[]) {
+  const press = parsePress(bytes)
+  if (!press) return
+  lastPress.value = press
+  const current = rig.value
+  if (!current) return
+  if (learning.value) {
+    const action = learning.value
+    learning.value = null
+    void applyRig({ ...current, controls: bind(current.controls, action, triggerFor(press)) })
+    return
+  }
+  const action = actionFor(current.controls, press)
+  if (action && song.value) void CONTROL[action]()
+}
+
 /** Send every loaded track its bus again, after buses were added, removed, renamed or reordered. */
 async function resyncTrackBuses() {
   const current = rig.value
@@ -296,6 +364,7 @@ async function applyRig(next: Rig): Promise<void> {
     await engine.setRouting(routingDoc(next))
     if (busesChanged(previous, next) || previous?.id !== next.id) await resyncTrackBuses()
     if (previous?.midiOutput !== next.midiOutput) await applyMidi(next.midiOutput)
+    if (previous?.midiInput !== next.midiInput) await applyMidiInput(next.midiInput)
   })
 }
 
@@ -353,6 +422,16 @@ export function usePlayer() {
     rigs,
     devices,
     midiPorts,
+    midiInputs,
+    learning,
+    lastPress,
+    /** List MIDI input ports. */
+    refreshMidiInputs: () =>
+      run(async () => {
+        await listenOnce()
+        await ensureOutput()
+        midiInputs.value = await engine.midiInputs()
+      }),
     /** List MIDI output ports (opens the audio device first, which loads the rig). */
     refreshMidi: () =>
       run(async () => {
@@ -427,35 +506,22 @@ export function usePlayer() {
       }
       return true
     },
-    toggle: () => (playing.value ? send({ type: 'stop' }) : startPlaying()),
+    toggle: togglePlay,
     pause: () => send({ type: 'stop' }),
     /** Stop and return to the start. */
-    stop: () =>
-      run(async () => {
-        await engine.command({ type: 'stop' })
-        await engine.command({ type: 'seek', position: 0 })
-      }),
+    stop: stopToStart,
     seek: (frames: number) => send({ type: 'seek', position: Math.max(0, Math.round(frames)) }),
     /** Jump to section `at` on the quantize boundary. */
-    jumpToSection: (at: number) => {
-      const target = sections.value[at]
-      if (!target) return Promise.resolve()
-      return playing.value
-        ? send({ type: 'arm', action: { type: 'jump', to: target.start }, quantize: quantize.value })
-        : send({ type: 'seek', position: target.start })
-    },
+    jumpToSection,
     /** Loop the section under the play head until `releaseVamp`. */
     vamp: () => send({ type: 'arm', action: { type: 'vamp' }, quantize: 'now' }),
     releaseVamp: () => send({ type: 'releaseVamp' }),
-    toggleVamp: () => send(state.value?.vamping ? { type: 'releaseVamp' } : { type: 'arm', action: { type: 'vamp' }, quantize: 'now' }),
-    stopAtSectionEnd: () => send({ type: 'arm', action: { type: 'stop' }, quantize: 'section' }),
-    skipNextSection: () => {
-      const target = skipTarget(sections.value, position.value)
-      return target ? send({ type: 'arm', action: { type: 'jump', to: target.start }, quantize: 'section' }) : Promise.resolve()
-    },
+    toggleVamp,
+    stopAtSectionEnd,
+    skipNextSection,
     cancelArmed: () => send({ type: 'cancelArmed' }),
     /** Go to the prepared next song now, playing if this one is. */
-    nextSongNow: () => (nextIndex.value === null ? Promise.resolve() : send({ type: 'advance', play: playing.value })),
+    nextSongNow,
     setMute: (track: number, value: boolean) => {
       muted.value = muted.value.map((m, i) => (i === track ? value : m))
       return send({ type: 'mute', track, muted: value })
