@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use stems_control::LtcGenerator;
+
 use crate::sampler::Sampler;
 use crate::stream::StreamSource;
 use crate::CHANNELS;
@@ -13,6 +15,8 @@ pub enum Source {
     Stream(StreamSource),
     /// Generated one-shots: click, guide.
     Sampler(Arc<Sampler>),
+    /// Generated linear timecode, the same on both sides.
+    Timecode(Arc<LtcGenerator>),
 }
 
 impl Source {
@@ -27,6 +31,7 @@ impl Source {
             Self::Memory(source) => (source.samples.len() / CHANNELS) as u64,
             Self::Stream(source) => source.frames(),
             Self::Sampler(sampler) => sampler.length(),
+            Self::Timecode(generator) => generator.length(),
         }
     }
 
@@ -49,6 +54,13 @@ impl Source {
             Self::Stream(source) => source.read(position, out),
             Self::Sampler(sampler) => {
                 sampler.read(position, out);
+                false
+            }
+            Self::Timecode(generator) => {
+                generator.fill_with(position, out.len() / CHANNELS, |index, value| {
+                    out[index * CHANNELS] = value;
+                    out[index * CHANNELS + 1] = value;
+                });
                 false
             }
         }

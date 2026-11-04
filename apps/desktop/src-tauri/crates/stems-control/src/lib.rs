@@ -1,5 +1,11 @@
 //! Show control: MIDI in and out, LTC and MTC, Ableton Link (docs/architecture/05-control-sync.md).
-//! Events are scheduled on the engine clock, never on a UI timer. Devices arrive in M5.
+//! Events are scheduled on the engine clock, never on a UI timer.
+
+pub mod ltc;
+pub mod timecode;
+
+pub use ltc::LtcGenerator;
+pub use timecode::{FrameRate, Timecode, TimecodeError};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 

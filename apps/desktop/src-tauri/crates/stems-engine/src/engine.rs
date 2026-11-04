@@ -12,6 +12,8 @@ use crate::command::{At, Command, Scheduled, Transition, TransitionKind};
 use crate::decode::FileReader;
 use crate::guide::{self, Cue, GuideOptions, Voices};
 use crate::mixer::{Garbage, Mixer, SCHEDULE_CAPACITY};
+use stems_control::{FrameRate, LtcGenerator, Timecode};
+
 use crate::pad::Pad;
 use crate::routing::{Routing, RoutingDoc};
 use crate::sampler::Sampler;
@@ -94,6 +96,10 @@ pub struct SongDoc {
     pub sections: Vec<SectionDoc>,
     #[serde(default)]
     pub markers: Vec<MarkerDoc>,
+    /// LTC label at the song start (`HH:MM:SS:FF`), for example `03:00:00:00` for the third song
+    /// with one timecode hour per song. `None` uses the timecode options' start.
+    #[serde(default)]
+    pub timecode_start: Option<String>,
 }
 
 impl SongDoc {
@@ -116,16 +122,49 @@ impl SongDoc {
             tracks: paths.iter().map(|file| TrackDoc { file: file.clone(), kind: TrackRole::Stem, gain: 1.0, mute: false, bus: None }).collect(),
             sections: Vec::new(),
             markers: Vec::new(),
+            timecode_start: None,
         }
     }
 }
 
-/// Click and guide settings (app settings, not per song).
+/// Click, guide and timecode settings (app settings, not per song).
 #[derive(Debug, Clone, PartialEq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct PerformOptions {
     pub click: ClickOptions,
     pub guide: GuideOptions,
+    pub timecode: TimecodeOptions,
+}
+
+/// LTC out. It plays into the rig's timecode bus only, never a fallback bus.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct TimecodeOptions {
+    pub enabled: bool,
+    pub rate: FrameRate,
+    /// The label at the start of each song (`HH:MM:SS:FF`), unless the song document gives its own.
+    pub start: String,
+    pub gain: f32,
+}
+
+impl Default for TimecodeOptions {
+    fn default() -> Self {
+        Self { enabled: false, rate: FrameRate::Fps30, start: "01:00:00:00".into(), gain: 0.25 }
+    }
+}
+
+impl TimecodeOptions {
+    /// The start label for a song: its own, else the options', else midnight.
+    fn start_for(&self, song_start: Option<&str>) -> Timecode {
+        song_start
+            .and_then(|text| Timecode::parse(text, self.rate).ok())
+            .or_else(|| Timecode::parse(&self.start, self.rate).ok())
+            .unwrap_or_else(|| Timecode::from_frames(0, self.rate))
+    }
+
+    fn generator(&self, song_start: Option<&str>, rate: u32, length: u64) -> LtcGenerator {
+        LtcGenerator::new(self.rate, self.start_for(song_start), rate, length)
+    }
 }
 
 /// How to reach the next song, as the setlist stores it.
@@ -175,6 +214,7 @@ pub struct SongInfo {
     /// Engine track indexes of the generated click and guide (after the audio tracks).
     pub click_track: usize,
     pub guide_track: usize,
+    pub timecode_track: usize,
 }
 
 // ── Engine ─────────────────────────────────────────────────────────────────────────────────
@@ -387,7 +427,13 @@ impl Engine {
         self.send(Command::Mute { track: click_track, muted: !click_options.enabled })?;
         self.send(Command::SetSource { track: guide_track, source: Source::Sampler(Arc::new(guide)) })?;
         self.send(Command::Gain { track: guide_track, gain: guide_options.gain })?;
-        self.send(Command::Mute { track: guide_track, muted: !guide_options.enabled })
+        self.send(Command::Mute { track: guide_track, muted: !guide_options.enabled })?;
+        let timecode_track = guide_track + 1;
+        let timecode = self.options.timecode.clone();
+        let generator = timecode.generator(doc.timecode_start.as_deref(), self.sample_rate, state.length);
+        self.send(Command::SetSource { track: timecode_track, source: Source::Timecode(Arc::new(generator)) })?;
+        self.send(Command::Gain { track: timecode_track, gain: timecode.gain })?;
+        self.send(Command::Mute { track: timecode_track, muted: !timecode.enabled })
     }
 
     /// Replace the rig's buses and routing. Every song, loaded or not, plays through it.
@@ -498,6 +544,15 @@ impl BuildJob {
             bus: None,
         });
 
+        let timecode_track = specs.len();
+        specs.push(TrackSpec {
+            source: Source::Timecode(Arc::new(options.timecode.generator(doc.timecode_start.as_deref(), rate, length))),
+            role: TrackRole::Timecode,
+            gain: options.timecode.gain,
+            muted: !options.timecode.enabled,
+            bus: None,
+        });
+
         let sections = doc
             .sections
             .iter()
@@ -514,7 +569,7 @@ impl BuildJob {
         let count_in = click::count_in(&tempo, &options.click, rate).map(|(sampler, frames)| (Arc::new(sampler), frames));
         let timeline = Timeline { tempo, sections, markers, count_in };
         let song = Song::build(tag, specs, timeline)?;
-        let info = SongInfo { tag, sample_rate: rate, length: song.length(), tracks, click_track, guide_track };
+        let info = SongInfo { tag, sample_rate: rate, length: song.length(), tracks, click_track, guide_track, timecode_track };
         Ok(Built { song, feeders, info, doc })
     }
 }

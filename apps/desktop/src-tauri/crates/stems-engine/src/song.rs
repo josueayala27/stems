@@ -22,6 +22,8 @@ pub enum TrackRole {
     Stem,
     Click,
     Guide,
+    /// Generated LTC. Never crossfaded: a blend of two timecodes decodes as neither.
+    Timecode,
 }
 
 #[derive(Debug)]
@@ -75,15 +77,17 @@ impl Track {
         }
     }
 
-    /// The bus this track plays into under `routing`.
+    /// The bus this track plays into under `routing`. Timecode with no timecode bus plays
+    /// nowhere: LTC must never fall back to a bus the audience hears.
     #[inline]
-    pub(crate) fn bus(&self, routing: &Routing) -> usize {
+    pub(crate) fn bus(&self, routing: &Routing) -> Option<usize> {
         let role = match self.role {
             TrackRole::Stem => routing.roles.stem,
             TrackRole::Click => routing.roles.click,
             TrackRole::Guide => routing.roles.guide,
+            TrackRole::Timecode => return routing.roles.timecode,
         };
-        routing.resolve(self.bus, role)
+        Some(routing.resolve(self.bus, role))
     }
 
     /// Click and guide ignore solo: soloing a stem never silences the click.

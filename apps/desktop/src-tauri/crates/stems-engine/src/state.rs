@@ -64,7 +64,7 @@ pub struct EngineState {
     /// Peak and RMS per bus, after the bus fader (`meter.rs`).
     pub bus_meters: [f32; MAX_BUSES],
     pub bus_rms: [f32; MAX_BUSES],
-    /// Bus each track plays into, after the role fallback.
+    /// Bus each track plays into, after the role fallback. 255: none (timecode with no bus).
     pub track_buses: [u8; MAX_TRACKS],
     /// Output channels of the device the mixer last rendered to.
     pub device_channels: usize,

@@ -121,14 +121,26 @@ fn mix_song(
         } else if track.source.read(position, scratch) {
             underruns += 1;
         }
-        let start = track.bus(routing) * BUS_STRIDE + offset * CHANNELS;
+        let timecode = track.role == TrackRole::Timecode;
+        let bus = match track.bus(routing) {
+            // An outgoing song's timecode stops at once: the incoming song's takes over.
+            Some(bus) if !(timecode && envelope.is_some_and(|envelope| !envelope.rising)) => bus,
+            _ => {
+                for _ in 0..frames {
+                    track.ramp.next_gain();
+                }
+                continue;
+            }
+        };
+        let start = bus * BUS_STRIDE + offset * CHANNELS;
         let mix = &mut buses[start..start + frames * CHANNELS];
         let mut meter = track.meter;
         for (index, (out, input)) in mix.chunks_exact_mut(CHANNELS).zip(scratch.chunks_exact(CHANNELS)).enumerate() {
-            let gain = track.ramp.next_gain() * envelope.map_or(1.0, |envelope| envelope.gain(index));
+            let shaped = if timecode { 1.0 } else { envelope.map_or(1.0, |envelope| envelope.gain(index)) };
+            let gain = track.ramp.next_gain() * shaped;
             let (mut left, mut right) = (input[0], input[1]);
             let fade = jump.position + index;
-            if fade < jump.len {
+            if fade < jump.len && !timecode {
                 let t = (fade as f32 + 0.5) / jump.len as f32;
                 let (fade_in, fade_out) = ((t * FRAC_PI_2).sin(), (t * FRAC_PI_2).cos());
                 left = left * fade_in + track.fade[fade * CHANNELS] * fade_out;
@@ -741,7 +753,8 @@ impl Mixer {
                     let scratch = &mut self.scratch[..frames * CHANNELS];
                     sampler.read(total - self.count_in, scratch);
                     let gain = song.tracks[click].target(false);
-                    let start = song.tracks[click].bus(&self.routing) * BUS_STRIDE + offset * CHANNELS;
+                    let bus = song.tracks[click].bus(&self.routing).unwrap_or(self.routing.roles.click);
+                    let start = bus * BUS_STRIDE + offset * CHANNELS;
                     let mix = &mut self.buses[start..start + frames * CHANNELS];
                     for (out, input) in mix.iter_mut().zip(scratch.iter()) {
                         *out += input * gain;
@@ -892,7 +905,7 @@ impl Mixer {
                 state.track_count = song.tracks.len();
                 for (index, track) in song.tracks.iter_mut().enumerate().take(MAX_TRACKS) {
                     (state.meters[index], state.rms[index]) = track.meter.settle(elapsed, rate);
-                    state.track_buses[index] = track.bus(&self.routing) as u8;
+                    state.track_buses[index] = track.bus(&self.routing).map_or(u8::MAX, |bus| bus as u8);
                 }
             }
             None => {

@@ -114,6 +114,8 @@ pub struct RoleBuses {
     pub click: usize,
     pub guide: usize,
     pub pad: usize,
+    /// LTC plays only into this bus; `None` keeps it silent.
+    pub timecode: Option<usize>,
 }
 
 /// The whole routing table. Sent to the mixer in a `Box` and handed back when replaced.
@@ -129,7 +131,7 @@ impl Routing {
     pub fn stereo() -> Self {
         let mut buses = [BusRoute::new(1.0, false, &[]); MAX_BUSES];
         buses[0] = BusRoute::new(1.0, false, &[0, 1]);
-        Self { buses, bus_count: 1, roles: RoleBuses { stem: 0, click: 0, guide: 0, pad: 0 } }
+        Self { buses, bus_count: 1, roles: RoleBuses { stem: 0, click: 0, guide: 0, pad: 0, timecode: None } }
     }
 
     pub fn from_doc(doc: &RoutingDoc) -> crate::Result<Self> {
@@ -149,6 +151,7 @@ impl Routing {
             click: pick(doc.click_bus, "click")?,
             guide: pick(doc.guide_bus, "guide")?,
             pad: pick(doc.pad_bus, "pad")?,
+            timecode: doc.timecode_bus.map(|bus| pick(bus, "timecode")).transpose()?,
         };
         let mut buses = [BusRoute::new(1.0, false, &[]); MAX_BUSES];
         for (slot, bus) in buses.iter_mut().zip(&doc.buses) {
@@ -226,6 +229,9 @@ pub struct RoutingDoc {
     pub guide_bus: usize,
     #[serde(default)]
     pub pad_bus: usize,
+    /// The LTC bus. `None`: timecode plays nowhere.
+    #[serde(default)]
+    pub timecode_bus: Option<usize>,
 }
 
 #[cfg(test)]
@@ -260,11 +266,12 @@ mod tests {
     #[test]
     fn documents_validate_bus_counts_and_role_buses() {
         let bus = BusDoc { gain: 1.0, mute: false, channels: vec![0, 1] };
-        let doc = RoutingDoc { buses: vec![bus.clone(), bus.clone()], stem_bus: 0, click_bus: 1, guide_bus: 1, pad_bus: 0 };
+        let doc = RoutingDoc { buses: vec![bus.clone(), bus.clone()], stem_bus: 0, click_bus: 1, guide_bus: 1, pad_bus: 0, timecode_bus: None };
         let routing = Routing::from_doc(&doc).unwrap();
         assert_eq!(routing.bus_count(), 2);
         assert_eq!(routing.roles.click, 1);
         assert!(Routing::from_doc(&RoutingDoc { click_bus: 2, ..doc.clone() }).is_err());
+        assert!(Routing::from_doc(&RoutingDoc { timecode_bus: Some(2), ..doc.clone() }).is_err());
         assert!(Routing::from_doc(&RoutingDoc { buses: vec![], ..doc.clone() }).is_err());
         assert!(Routing::from_doc(&RoutingDoc { buses: vec![bus; MAX_BUSES + 1], ..doc }).is_err());
     }
@@ -277,6 +284,7 @@ mod tests {
             click_bus: 2,
             guide_bus: 2,
             pad_bus: 0,
+            timecode_bus: Some(1),
         };
         let routing = Routing::from_doc(&doc).unwrap();
         assert_eq!(routing.resolve(Some(1), 0), 1);
