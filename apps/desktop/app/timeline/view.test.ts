@@ -34,6 +34,7 @@ describe('timeline view', () => {
     const view = { start: 1_000_000, scale: 1_000 }
     const base = { deltaX: 0, deltaY: 0, ctrlKey: false, metaKey: false, shiftKey: false }
     expect(wheel(view, { ...base, deltaY: 40 }, 0, LENGTH, WIDTH)).toBeNull()
+    expect(wheel(view, { ...base, deltaX: 3, deltaY: 40 }, 0, LENGTH, WIDTH)).toBeNull()
     expect(wheel(view, { ...base, deltaX: 10 }, 0, LENGTH, WIDTH)?.start).toBe(1_010_000)
     expect(wheel(view, { ...base, deltaY: 10, shiftKey: true }, 0, LENGTH, WIDTH)?.start).toBe(1_010_000)
     expect(wheel(view, { ...base, deltaY: -50, ctrlKey: true }, 500, LENGTH, WIDTH)!.scale).toBeLessThan(1_000)

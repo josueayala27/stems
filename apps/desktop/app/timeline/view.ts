@@ -79,7 +79,9 @@ export function wheel(
   width: number,
 ): View | null {
   if (event.ctrlKey || event.metaKey) return zoomAt(view, Math.exp(-event.deltaY * 0.01), x, length, width)
-  const horizontal = event.shiftKey ? event.deltaY || event.deltaX : event.deltaX
+  // A mostly vertical swipe scrolls the rows; only a mostly sideways one moves the timeline.
+  const sideways = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : 0
+  const horizontal = event.shiftKey ? event.deltaY || event.deltaX : sideways
   if (Math.abs(horizontal) < 0.5) return null
   return scrollBy(view, horizontal, length, width)
 }
